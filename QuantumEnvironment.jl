@@ -1,7 +1,9 @@
 
 module QuantumEnvironment
 
+    using QuantumOptics
     using ..QuantumSystemOperators
+    
 
     using LinearAlgebra   
     using DifferentialEquations
@@ -9,27 +11,41 @@ module QuantumEnvironment
     function schrodinger_equation!(du, u, p, t)
     """
 
-    Parametri `p` (tuple):
+    Parametri `p` (tuple) contiene:
+
     action_t: Vettore Float32 [Re(drive_b), Im(drive_b), Re(drive_q), Im(drive_q)] per l'azione di controllo.
-    
+    system_params: Dizionario con costanti fisiche (omega_m, g)
     
     """
+
+    
+    system_params = p.system_params
     action_t = p.action_t 
 
-    ωq  = action_t[1] #qubit frequency, controlled by RL
-    Ωx  = action_t[2] #drive amplitude, controlled by RL
+    
+    ωm    = system_params[:omega_m] 
+    g     = system_params[:g] 
 
-    Δ = ωq - ωm
+    ωq_t  = action_t[1] #qubit frequency, controlled by RL
+    Ωx_t  = action_t[2] #drive amplitude, controlled by RL
 
-    H_free = Δ //2 * sigma_z_op
+    Δ_t = ωq_t - ωm
+
+    H_free = Δ_t /2 * sigma_z_op
 
     HC = g * (bdag_op * sigma_minus_op + b_op * sigma_plus_op  )
 
-    H_drive = Ωx //2 * sigma_z_op 
+    H_drive = Ωx_t * sigma_x_op 
 
     H = H_free + HC + H_drive
 
-    return H
+    u_qo = StateVector(bas_qs, u)
+
+    res = -1im * H * u_qo
+
+    du[:] = res.data
+
+    return 
 
     end 
 

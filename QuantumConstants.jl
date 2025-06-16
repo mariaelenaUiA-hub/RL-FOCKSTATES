@@ -33,5 +33,7 @@ module QuantumConstants
     const Tswap0 = pi/ (2 *g)
     const ωstark = (2*g^2)/ Δ0 * (n + 0.5) 
 
+    const T = 2e-6
+
     export hbar, kb, ωm, ωq, g, Δ0, κϕ, κ, γm, Teq, szth, nmth, n, ω0, Tπ, Tswap0, ωstark, N_fock_cutoff, N_dim_qs
 end     
