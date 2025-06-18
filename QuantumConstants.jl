@@ -2,7 +2,7 @@
 
 module QuantumConstants
 
-    const N_fock_cutoff = 3 #da |0> a |2>)
+    const N_fock_cutoff = 3 #da |0> a |2>
     const N_dim_qs = 2 *N_fock_cutoff #Qubit=2 * Fononi=N_FOCK_CUTOFF
 
     const hbar = 1.054571817e−34

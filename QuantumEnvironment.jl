@@ -8,7 +8,7 @@ module QuantumEnvironment
     using LinearAlgebra   
     using DifferentialEquations
 
-    function schrodinger_equation!(du, u, p, t)
+    function schrodinger_equation!(du, u, p,t)
     """
 
     Parametri `p` (tuple) contiene:
@@ -18,9 +18,9 @@ module QuantumEnvironment
     
     """
 
-    
+    action_t = p.action_t
     system_params = p.system_params
-    action_t = p.action_t 
+    
 
     
     ωm    = system_params[:omega_m] 
@@ -39,8 +39,8 @@ module QuantumEnvironment
 
     H = H_free + HC + H_drive
 
-    u_qo = StateVector(bas_qs, u)
-
+    u_qo =  StateVector(bas_qs,u)
+ 
     res = -1im * H * u_qo
 
     du[:] = res.data
