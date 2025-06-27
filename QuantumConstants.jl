@@ -11,11 +11,8 @@ module QuantumConstants
 
     #frequencies
     const ωm = 5.9614e6 #kHz
-    const ωq = 5.9456e6 #kHz
     const g  = 258.0
-    const Δ0  = (ωq-ωm)
-
-
+    
     #dissipation rates
     const κϕ = 0.25
     const κ  = 19
@@ -35,5 +32,5 @@ module QuantumConstants
 
     const T = 2e-6
 
-    export hbar, kb, ωm, ωq, g, Δ0, κϕ, κ, γm, Teq, szth, nmth, n, ω0, Tπ, Tswap0, ωstark, N_fock_cutoff, N_dim_qs
+    export hbar, kb, ωm, g, κϕ, κ, γm, Teq, szth, nmth, n, ω0, Tπ, Tswap0, ωstark, N_fock_cutoff, N_dim_qs
 end     
