@@ -134,14 +134,6 @@ H_JC = g * (Iad * mI  + Ia * pI)
 
 
 
-qub, mech, HBAR_qubit = Qubit_HO(N_cut_off, :FockBasis, 1//2)
-
-basis_system = HBAR_qubit.Ia.basis_l
-
-
-H_JC = g * (Iad * mI  + Ia * pI) 
-
-
 
 function SE_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t) 
     ωq, Ω = p[1],p[2]
@@ -207,11 +199,17 @@ function QuantumEnv(N_cut_off::Int)
     
     #initial_state =  tensor(spindown(qub.basis), fockstate(mech.basis, 0))
     initial_state  = tensor(spindown(qub.basis), fockstate(mech.basis, 0))
-    t0 = 0
-    t_step =  0.05
-    max_steps = 100
 
-    t_span =(t0, t_step)
+                        
+                        
+
+    
+    t0 = 0.0
+    t_step =   0.3e-2
+    max_steps = 800
+
+
+    t_span =(t0, t0 + t_step)
 
     return QuantumEnv(ops, target, initial_state, t_span, max_steps, 0, 0.0, false)
 end
@@ -233,15 +231,17 @@ RLBase.is_terminated(env::QuantumEnv) = env.current_step >= env.max_steps
 
 
 function RLBase.reset!(env::QuantumEnv)
-    qub_basis = env.operators.zI.basis_l.bases[1] 
+    qub_basis  = env.operators.zI.basis_l.bases[1]
     mech_basis = env.operators.zI.basis_l.bases[2]
     env.current_state = tensor(spindown(qub_basis), fockstate(mech_basis, 0))
-    env.current_step = 0
-    env.reward = 0.0
-    env.done = false 
+    env.current_step  = 0
+    env.reward        = 0.0
+    env.done          = false
+    Δt = env.t_span[2] - env.t_span[1]
+    env.t_span = (0.0, Δt)   # riparti da t=0 mantenendo lo stesso passo
     return RLBase.state(env)
-    
 end
+
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -318,77 +318,73 @@ function (critic::Critic)(state)
     end
 end
 
-
-
-
-
-
 function step!(env::QuantumEnv, a::Vector{Float64})
-
     env.current_step += 1
     normalize!(env.current_state)
 
-    old_fid_amplitude= abs(env.target_state' * env.current_state)
-    old_fid = old_fid_amplitude^2
+    old_fid = abs2(env.target_state' * env.current_state)
 
+    # ---- mapping azioni → controlli fisici (kHz) ----
+    Δ_max = 5e4      # 50 MHz (in kHz)
+    Ω_max = 8.33e2     # ≈520 kHz (o 1.04e3 se xI=σx/2)
+    ωq = ωm + Δ_max * tanh(a[1])
+    Ω  = Ω_max * tanh(a[2])
 
-
-
-    ωq_low  = ωm - 5e5
-    ωq_high = ωm + 5e5
-
-    Ω_low  = -5e5
-    Ω_high = 5e5
-
-    a_ωq = a[1]
-    a_Ω  = a[2]
-
-    ωq = ωq_low + (a_ωq + 1)/2 * (ωq_high  - ωq_low)
-    Ω  = Ω_low  + (a_Ω  + 1)/2 * (Ω_high -  Ω_low)
-
-    p = (ωq, Ω)
-
+    # ---- integrazione su tempo CONTINUO ----
+    t0, t1 = env.t_span
     u0 = to_real_vec(env.current_state.data)
-    
-    prob = ODEProblem(SE_Fock_dynamics, u0, env.t_span, p)
-    sol = solve(prob,Tsit5(), reltol=1e-4, abstol=1e-6,save_everystep=false, save_start=false,maxiters=1e7,alias_u0 = false)
-    
+    prob = ODEProblem(SE_Fock_dynamics, u0, (t0, t1), (ωq, Ω))
+    sol  = solve(prob, Tsit5(); reltol=1e-4, abstol=1e-6,
+                 save_everystep=false, save_start=false, save_on=false,
+                 maxiters=1e7, dt=1e-7)
 
-    final_state = sol.u[end]
-
-    env.current_state = Ket(env.current_state.basis, recomposition(final_state))
-
+    env.current_state = Ket(env.current_state.basis, recomposition(sol.u[end]))
     normalize!(env.current_state)
 
+    # finestra successiva (mantieni Δt costante)
+    Δt = t1 - t0
+    env.t_span = (t1, t1 + Δt)
 
-
-    new_fid_amplitude = abs(env.target_state' * env.current_state)
-    new_fidelity = new_fid_amplitude^2
-    new_fidelity = clamp(new_fidelity, 0.0, 1.0)
-
+    # ---- reward & done ----
+    new_fidelity = clamp(abs2(env.target_state' * env.current_state), 0.0, 1.0)
     
-    
-    reward = 100 * new_fidelity
-    reward += 200 * (new_fidelity - old_fid)
 
-    done = false
-    
-    success_threshold = 0.95
-    success_bonus = 2000
+    success_threshold = 0.99
+    success_bonus     = 0.5
 
-    if new_fidelity > success_threshold
-        reward += success_bonus 
-        done = true
+    if new_fidelity ≥ success_threshold
+        reward = new_fidelity + success_bonus
+        env.done = true
+    elseif env.current_step ≥ env.max_steps
+        reward = new_fidelity
+        env.done = true
+    else
+        reward = 0.05 * tanh(5 * (new_fidelity - old_fid)) 
+        env.done = false
     end
-
-    if env.current_step >= env.max_steps
-        done = true
-    end
-
-
-
-    return reward, done
+    reward -= 1e-3
+    return reward, env.done
 end
+
+
+
+function step_envs!(envs::Vector{QuantumEnv}, actions::Vector)
+    N = length(envs)
+    rewards = Vector{Float64}(undef, N)
+    dones   = Vector{Bool}(undef, N)
+    states  = Vector{Vector{Float64}}(undef, N)
+    Threads.@threads for i in 1:N
+        r, d = step!(envs[i], actions[i])
+        rewards[i] = r
+        dones[i]   = d
+        states[i]  = RLBase.state(envs[i])
+    end
+    return states, rewards, dones
+end
+
+
+
+
 
 struct PPOPolicy
     actor::Actor
@@ -404,10 +400,11 @@ mutable struct PPOBuffer
     dones::Vector{Bool}
     log_probs::Vector{Float64}
     values::Vector{Float64}
+    env_ids::Vector{Int}
 end
 
 function PPOBuffer()
-    PPOBuffer([], [], [], [], [], [])
+    PPOBuffer([], [], [], [], [], [], Int[])
 end
 
 function Base.empty!(buffer::PPOBuffer)
@@ -417,6 +414,7 @@ function Base.empty!(buffer::PPOBuffer)
     empty!(buffer.dones)
     empty!(buffer.log_probs)
     empty!(buffer.values)
+    empty!(buffer.env_ids)
 end
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -427,6 +425,8 @@ mutable struct PPOAgent
     policy::PPOPolicy
     actor_optimizer
     critic_optimizer
+    actor_opt_state     # stato dell'optimizer per l'attore
+    critic_opt_state    # stato dell'optimizer per il critico
     gamma::Float64
     lambda::Float64
     clip_range::Float64
@@ -441,8 +441,7 @@ mutable struct PPOAgent
     buffer::PPOBuffer
 end
 
-
-Functors.@functor PPOAgent (policy,)
+Functors.@functor PPOAgent (policy,)  # va bene così; gli opt_state non sono parametri
 
 
 function PPOAgent(
@@ -464,17 +463,22 @@ function PPOAgent(
 )
     policy = PPOPolicy(actor, critic)
     buffer = PPOBuffer()
-    
+
+    actor_opt_state  = Flux.setup(actor_optimizer,  policy.actor)
+    critic_opt_state = Flux.setup(critic_optimizer, policy.critic)
+
     return PPOAgent(
         policy,
         actor_optimizer,
         critic_optimizer,
-        gamma,
-        lambda,
-        clip_range,
-        entropy_loss_weight,
-        critic_loss_weight,
-        max_grad_norm,
+        actor_opt_state,
+        critic_opt_state,
+        float(gamma),
+        float(lambda),
+        float(clip_range),
+        float(entropy_loss_weight),
+        float(critic_loss_weight),
+        float(max_grad_norm),
         n_rollout,
         n_env,
         n_update_epochs,
@@ -484,129 +488,255 @@ function PPOAgent(
     )
 end
 
+function reset_opt_states!(agent::PPOAgent)
+    agent.actor_opt_state  = Flux.setup(agent.actor_optimizer,  agent.policy.actor)
+    agent.critic_opt_state = Flux.setup(agent.critic_optimizer, agent.policy.critic)
+    return agent
+end
+
+
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 # Core PPO Functions
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-function store_transition!(agent::PPOAgent, state, action, reward, done, logp, value)
+# utility
+function _min_len(buf::PPOBuffer)
+    minimum((
+        length(buf.states), length(buf.actions), length(buf.rewards),
+        length(buf.dones), length(buf.log_probs), length(buf.values),
+        length(buf.env_ids)
+    ))
+end
+
+function _trim_to!(buf::PPOBuffer, L::Int)
+    buf.states     = buf.states[1:L]
+    buf.actions    = buf.actions[1:L]
+    buf.rewards    = buf.rewards[1:L]
+    buf.dones      = buf.dones[1:L]
+    buf.log_probs  = buf.log_probs[1:L]
+    buf.values     = buf.values[1:L]
+    buf.env_ids    = buf.env_ids[1:L]
+end
+
+
+
+function store_transition!(agent::PPOAgent, state, action, reward, done, logp, value; env_id::Int)
     push!(agent.buffer.states, state)
     push!(agent.buffer.actions, action)
     push!(agent.buffer.rewards, reward)
     push!(agent.buffer.dones, done)
     push!(agent.buffer.log_probs, logp)
     push!(agent.buffer.values, value)
+    push!(agent.buffer.env_ids, env_id)
 end
+
+
+function store_step!(buffer::PPOBuffer, state, action, reward, done, log_prob, value)
+    push!(buffer.states, state)
+    push!(buffer.actions, action)
+    push!(buffer.rewards, reward)
+    push!(buffer.dones, done)
+    push!(buffer.log_probs, log_prob)
+    push!(buffer.values, value)
+end
+
+atanh_clamped(x) = 0.5 * log((1 + clamp(x, -1 + 1e-6, 1 - 1e-6)) / (1 - clamp(x, -1 + 1e-6, 1 - 1e-6)))
+
+function sample_squashed(dist)
+    u = [rand(d) for d in dist] |> x -> reshape(x, size(dist))
+    a = tanh.(u)
+    log_base = logpdf.(dist, u)
+    if ndims(log_base) == 1
+        lp = sum(log_base) - sum(log.(1 .- a.^2 .+ 1e-6))
+        return a, lp                # scala
+    else
+        lp = vec(sum(log_base, dims=1) .- sum(log.(1 .- a.^2 .+ 1e-6), dims=1))
+        return a, lp                # vettore per batch
+    end
+end
+
+
+function logprob_squashed(dist, a)  # calcola logπ(a) dato a∈[-1,1]
+    u = atanh_clamped.(a)
+    lp = sum(logpdf.(dist, u), dims=1) .- sum(log.(1 .- a.^2 .+ 1e-6), dims=1)
+    return vec(lp)
+end
+
 
 function select_action(agent::PPOAgent, state::Vector{Float64})
     dist = agent.policy.actor(state)
-    action = [rand(d) for d in dist]
-    
-    max_val = 1
-    action = clamp.(action, -max_val, max_val)
-    # Campiona un'azione per ogni distribuzione
-    log_prob = sum(logpdf.(dist, action))
+    a, logp = sample_squashed(dist)     # a ∈ [-1,1]
     value = agent.policy.critic(state)
-    return action, log_prob, value
+    return collect(a), (logp isa AbstractArray ? logp[1] : logp), value
 end
+
+
+
+
+
 
 function ready_to_update(agent::PPOAgent)
     return length(agent.buffer.rewards) >= agent.n_rollout
 end
 
 
-function update!(agent::PPOAgent; next_value = 0.0)
-    
-    all_values = [agent.buffer.values; next_value]
-
-    update_policy!(
-        agent,
-        all_values
-    )
+function update!(agent::PPOAgent; bootstrap_values_by_env::Vector{Float64})
+    L = _min_len(agent.buffer)
+    if L == 0
+        empty!(agent.buffer); return
+    end
+    _trim_to!(agent.buffer, L)
+    update_policy!(agent, bootstrap_values_by_env)
     empty!(agent.buffer)
 end
 
-# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-# PPO Logic
-# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+
+
+function clear_buffer!(agent::PPOAgent)
+    agent.buffer.states = []
+    agent.buffer.actions = []
+    agent.buffer.rewards = Float64[]
+    agent.buffer.dones = Bool[]
+    agent.buffer.values = Float64[]
+    agent.buffer.log_probs = Float64[]
+end
+
+
+# ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# PPO Logic - Versione corretta
+# ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+# Calcolo delle advantage tramite Generalized Advantage Estimation (GAE)
 function compute_gae(rewards::Vector{Float64}, values::Vector{Float64}, dones::Vector{Bool}; γ=0.99, λ=0.95)
     T = length(rewards)
+    @assert length(values) == T + 1 "Il vettore values deve avere lunghezza T+1"
+    @assert length(dones) == T "Il vettore dones deve avere lunghezza T"
+
     advantages = zeros(Float64, T)
     gae = 0.0
     for t in T:-1:1
-        
-        delta = rewards[t] + γ * values[t+1] * (1 - dones[t]) - values[t]
-        gae = delta + γ * λ * (1 - dones[t]) * gae
+        delta = rewards[t] + γ * values[t+1] * (1.0 - dones[t]) - values[t]
+        gae = delta + γ * λ * (1.0 - dones[t]) * gae
         advantages[t] = gae
     end
     return advantages
 end
 
-function update_policy!(agent::PPOAgent, all_values::Vector{Float64})
-    
-    
-    advantages = compute_gae(agent.buffer.rewards, all_values, agent.buffer.dones; γ=agent.gamma, λ=agent.lambda)
-    returns = advantages .+ agent.buffer.values # returns = A_t + V_t
+function update_policy!(agent::PPOAgent, bootstrap_by_env::Vector{Float64})
+    # --- 1) Buffer coerente ---
+    T = _min_len(agent.buffer)
+    if T == 0; return; end
+    _trim_to!(agent.buffer, T)
 
-    
-    adv_mean, adv_std = mean(advantages), std(advantages) + 1e-8
-    norm_adv = (advantages .- adv_mean) ./ adv_std
+    r   = agent.buffer.rewards
+    v   = agent.buffer.values
+    d   = agent.buffer.dones
+    eid = agent.buffer.env_ids
 
-    data = (
-        states=agent.buffer.states, 
-        actions=agent.buffer.actions, 
-        returns=returns, 
-        advantages=norm_adv, 
-        log_probs=agent.buffer.log_probs
-    )
+    # --- 2) GAE per environment (scan a ritroso) ---
+    adv      = zeros(Float64, T)
+    last_v   = Dict{Int,Float64}(i => bootstrap_by_env[i] for i in 1:length(bootstrap_by_env))
+    last_adv = Dict{Int,Float64}(i => 0.0                for i in 1:length(bootstrap_by_env))
 
-    
-    for _ in 1:agent.n_update_epochs
-        
-        indices = randperm(agent.rng, length(data.states))
-        
-        for batch_indices in Iterators.partition(indices, agent.mini_batch_size)
-            
-            
-            batch_states = hcat(data.states[batch_indices]...)
-            batch_actions = hcat(data.actions[batch_indices]...)
-            batch_returns = data.returns[batch_indices]
-            batch_advantages = data.advantages[batch_indices]
-            batch_old_log_probs = data.log_probs[batch_indices]
-
-            
-            ps_actor = Flux.params(agent.policy.actor)
-            grads_actor = Flux.gradient(ps_actor) do
-                dist = agent.policy.actor(batch_states)
-                log_probs = sum(logpdf.(dist, batch_actions), dims=1)[:]
-                
-                ratios = exp.(log_probs .- batch_old_log_probs)
-                
-                surr1 = ratios .* batch_advantages
-                surr2 = clamp.(ratios, 1 - agent.clip_range, 1 + agent.clip_range) .* batch_advantages
-                
-                actor_loss = -mean(min.(surr1, surr2))
-                entropy_loss = -mean(sum(entropy.(dist), dims=1))
-                
-                return actor_loss + agent.entropy_loss_weight * entropy_loss
-            end
-            
-            
-            ps_critic = Flux.params(agent.policy.critic)
-            grads_critic = Flux.gradient(ps_critic) do
-                values_pred = agent.policy.critic(batch_states)[:]
-                return Flux.mse(values_pred, batch_returns) * agent.critic_loss_weight
-            end
-
-            
-            Flux.Optimisers.update!(agent.actor_optimizer, ps_actor, grads_actor)
-            Flux.Optimisers.update!(agent.critic_optimizer, ps_critic, grads_critic)
+    γ, λ = agent.gamma, agent.lambda
+    @inbounds for t in T:-1:1
+        e = eid[t]
+        next_v = d[t] ? 0.0 : get(last_v, e, 0.0)
+        δ = r[t] + γ * next_v - v[t]
+        adv[t] = δ + γ * λ * (d[t] ? 0.0 : get(last_adv, e, 0.0))
+        last_adv[e] = adv[t]
+        last_v[e]   = v[t]
+        if d[t]
+            last_adv[e] = 0.0
+            last_v[e]   = 0.0
         end
     end
+    returns = adv .+ v
 
+    # --- 3) Normalizza le advantage ---
+    μ, σ = mean(adv), std(adv) + 1e-8
+    norm_adv = (adv .- μ) ./ σ
 
+    # --- 4) Dataset ---
+    data_states     = agent.buffer.states
+    data_actions    = agent.buffer.actions        # in [-1,1]
+    data_returns    = returns
+    data_advantages = norm_adv
+    data_old_logps  = agent.buffer.log_probs
+
+    N = length(data_states)
+    if N == 0; return; end
+
+    target_KL = 0.005
+
+    # --- 5) PPO updates ---
+    for _ in 1:agent.n_update_epochs
+        idx = randperm(agent.rng, N)
+        running_kl = 0.0
+        num_mb = 0
+
+        for start in 1:agent.mini_batch_size:length(idx)
+            stop = min(start + agent.mini_batch_size - 1, length(idx))
+            bi = idx[start:stop]
+
+            batch_states     = hcat(data_states[bi]...)
+            batch_actions    = hcat(data_actions[bi]...)      # (act_dim, B)
+            batch_returns    = data_returns[bi]
+            batch_advantages = data_advantages[bi]
+            batch_old_logps  = data_old_logps[bi]
+
+            # ----- ACTOR (squashed) — gradienti rispetto al MODELLO -----
+            grads_actor_tuple = Flux.gradient(agent.policy.actor) do actor_model
+                dist      = actor_model(batch_states)                 # Array{Normal} (act_dim, B)
+                new_logps = logprob_squashed(dist, batch_actions)     # logπ(a) con tanh-squash
+                ratios    = exp.(new_logps .- batch_old_logps)
+
+                surr1 = ratios .* batch_advantages
+                surr2 = clamp.(ratios, 1 - agent.clip_range, 1 + agent.clip_range) .* batch_advantages
+                actor_loss = -mean(min.(surr1, surr2))
+
+                # entropia proxy dei Normal non-squashed (regolarizza σ)
+                ent = sum(entropy.(dist), dims=1)[:]
+                entropy_term = -mean(ent)
+
+                actor_loss + agent.entropy_loss_weight * entropy_term
+            end
+            grads_actor = first(grads_actor_tuple)
+
+            # Update attore: prende nuovo opt_state e il MODELLO aggiornato
+            new_actor_opt_state, new_actor =
+                Flux.update!(agent.actor_opt_state, agent.policy.actor, grads_actor)
+            agent.actor_opt_state = new_actor_opt_state
+            # Ricrea l'intera policy (PPOPolicy è immutabile)
+            agent.policy = PPOPolicy(new_actor, agent.policy.critic)
+
+            # ----- CRITIC — gradienti rispetto al MODELLO -----
+            grads_critic_tuple = Flux.gradient(agent.policy.critic) do critic_model
+                v̂ = critic_model(batch_states)[:]
+                Flux.mse(v̂, batch_returns) * agent.critic_loss_weight
+            end
+            grads_critic = first(grads_critic_tuple)
+
+            new_critic_opt_state, new_critic =
+                Flux.update!(agent.critic_opt_state, agent.policy.critic, grads_critic)
+            agent.critic_opt_state = new_critic_opt_state
+            agent.policy = PPOPolicy(agent.policy.actor, new_critic)
+
+            # ----- KL monitor -----
+            dist_after  = agent.policy.actor(batch_states)
+            new_logps   = logprob_squashed(dist_after, batch_actions)
+            running_kl += mean(batch_old_logps .- new_logps)
+            num_mb += 1
+        end
+
+        if num_mb > 0 && running_kl / num_mb > target_KL
+            break
+        end
+    end
 end
-
-
-#────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-#────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
