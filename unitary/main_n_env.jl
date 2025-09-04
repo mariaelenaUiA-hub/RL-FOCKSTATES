@@ -1,3 +1,4 @@
+using Flux.Optimisers: OptimiserChain, ClipNorm, Adam
 using Revise 
 using Base.Threads
 using Plots
@@ -24,8 +25,8 @@ CLIP_RANGE = 0.2 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
 CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
-LR_ACTOR = 0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
-LR_CRITIC = 0.5e-4 ;# Learning rate for the critic network
+LR_ACTOR = 0.5e-5; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
+LR_CRITIC = 0.5e-5 ;# Learning rate for the critic network
 N_ROLLOUT = 8* 500
 N_ENV = 8;
 n_envs = N_ENV;
@@ -217,7 +218,7 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 1000;
+num_episodes = 5000;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
 
