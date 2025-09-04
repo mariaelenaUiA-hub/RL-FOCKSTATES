@@ -1,5 +1,7 @@
 using Revise 
 using Base.Threads
+using Plots
+using JLD2
 plotlyjs()
 using Statistics
 N_cut_off = 6;
@@ -12,13 +14,13 @@ include("RL_PPO_n_env.jl")
 # --- PPO Hyperparameters 
 BATCH_SIZE = 64;
 LAST_BUMP_EP = Ref(0)
-THR_LADDER = [ 0.80,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.970,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9999];
+THR_LADDER = [ 0.80,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.970,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
 N_UPDATE_EPOCHS = 4;
 GAMMA = 0.99 ;
 LAMBDA = 0.95;
-CLIP_RANGE = 0.1 #provare 0.3 forse??;
+CLIP_RANGE = 0.2 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
 CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
@@ -215,22 +217,21 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 3000;
+num_episodes = 1000;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
 
 
-using JLD2
 
-@save "plots & data/results_2_0.9986.jld2" all_rewards all_fidelities best_actions
+@save "unitary/plots & data//re.jld2" all_rewards all_fidelities best_actions 
 
 function evolution_step_from_action(a::Tuple{<:Real,<:Real}, ψ0::Ket, tspan::Tuple{Float64,Float64})
     a1, a2 = a
     a1 = clamp(a[1], -1.0, 1.0)
     a2 = clamp(a[2], -1.0, 1.0)
     
-    Δ_max = 10e4      
-    Ω_max = 10e3      # ≈520 kHz (o 1.04e3 se xI=σx/2)
+    Δ_max = 5e4    
+    Ω_max = 5e4     
    
     Δ  = Δ_max *a1  
     Ω  = Ω_max *a2          # kHz
@@ -249,7 +250,7 @@ function evolution_step_from_action(a::Tuple{<:Real,<:Real}, ψ0::Ket, tspan::Tu
     exp_mech = expect(HBAR_qubit.n_mech,  ψt)
     exp_qub  = expect(HBAR_qubit.n_qubit, ψt)
     return real.(exp_mech), real.(exp_qub), ψt
-end
+end 
 
 
 # ----------------- rollout deterministico con best_actions -----------------
@@ -304,9 +305,10 @@ plot_q = plot(exp_values_q;
     title="Qubit excitation");
 
 plot_tot = display(plot(plot_mech, plot_q, layout=(2,1), size=(1000,800)))
-savefig("plots & data/plot_2.pdf")
-savefig(plot_mech,"plots & data/plot_mech_2.pdf")
-savefig(plot_q,"plots & data/plot_q_2.pdf")
+
+savefig("unitary/plots & data/plot_4.pdf")
+savefig(plot_mech,"unitary/plots & data/plot_mech_4.pdf")
+savefig(plot_q,"unitary/plots & data/plot_q_4.pdf")
 
  
 steps = length(exp_values_q)
@@ -319,12 +321,12 @@ p = plot( exp_values;
      title="Occupancy",
      legend=:outertopright,
       size=(1200,800),
-      legendtitle="Fidelity = 0.99037490",
+      legendtitle="Fidelity finale = 0.9998024937",
       grid=true);
 
 plot!(p, exp_values_q; label="⟨n_qubit⟩")
 
-savefig(p, "plots & data/occupancy_2.pdf")
+savefig(p, "unitary/plots & data/occupancy_4.pdf")
 
 
 
@@ -344,7 +346,7 @@ function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
 
     a1 = a_mat[1, :]                # in [-1,1]
     a2 = a_mat[2, :]
-    Δ = Δ_max .* a1         # kHz
+    Δ = Δ_max .* a1                # kHz
     Ω = Ω_max .* a2                # kHz
 
     p = plot(layout=(2,1), link=:x, size=(1200,800))
@@ -356,8 +358,8 @@ end
 
 
 
-Δ_max = 10e4   ;   
-Ω_max = 10e3    ;   
+Δ_max = 5e4   ;   
+Ω_max = 5e4   ;   
 
 
 plot_best_actions = plot_best_controls(best_actions; ωm=ωm, Δ_max=Δ_max, Ω_max=Ω_max)

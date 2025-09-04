@@ -31,8 +31,6 @@ struct qubit_ho{ho_basis}
     n_qubit::QuantumOpticsBase.Operator{CompositeBasis{Vector{Int64}, Tuple{SpinBasis{1//2, Int64}, ho_basis}}, CompositeBasis{Vector{Int64}, Tuple{SpinBasis{1//2, Int64}, ho_basis}}, <:AbstractMatrix}
 end
 
-
-
 struct HOSystem
     basis::FockBasis
     a::Operator
@@ -72,7 +70,6 @@ function Qubit(spin)
     
 end
 
-
 function Qubit_HO(N_mech, type_basis_mech::Symbol, type_basis_qubit)
     qub = Qubit(type_basis_qubit)
     mech_res = Harmonic_oscillator(N_mech, type_basis_mech)
@@ -92,7 +89,6 @@ function Qubit_HO(N_mech, type_basis_mech::Symbol, type_basis_qubit)
             0.5 * (tensor(qub.Id, mech_res.Id) + tensor(qub.σz, mech_res.Id))
         )
 end
-
 
 function recomposition(vector::Vector{Float64})
     exit_vec = Vector{ComplexF64}(undef, length(vector) ÷ 2)
@@ -130,11 +126,6 @@ xI = HBAR_qubit.xI.data
 
 H_JC = g * (Iad * mI  + Ia * pI) 
 
-
-
-
-
-
 function SE_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t) 
     Δ, Ω = p[1],p[2]
 
@@ -161,18 +152,6 @@ end
 function SE_Fock_problem!(tspan, p, ψ0)
     return ODEProblem(SE_Fock_dynamics, to_real_vec(ψ0), tspan, p)
 end
-
-
-
-
-function Quantum_solver_ODE(tspan, p, ψ0)
-    prob = SE_Fock_problem!(tspan, p, ψ0)
-    sol = solve(prob, Tsit5())
-
-
-    return sol.t, sol.u
-end
-
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -203,11 +182,13 @@ function QuantumEnv(N_cut_off::Int)
 
     t0 = 0.0
     t_step =   0.3e-2
+
+    #t_step =   0.3e-4
     
-    max_steps = 500
+    max_steps = 500 #500
 
 
-    t_span =(t0, t0 + t_step)
+    t_span = (t0, t0 + t_step)
 
     return QuantumEnv(ops, target, initial_state, t_span, max_steps, 0, 0.0, false)
 end
@@ -323,8 +304,8 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     old_fid = abs2(env.target_state' * env.current_state)
 
     # ---- mapping azioni → controlli fisici (kHz) ----
-    Δ_max = 10e4  
-    Ω_max = 10e3   
+    Δ_max = 5e4
+    Ω_max = 5e4
 
     a1 = clamp(a[1], -1.0, 1.0)
     a2 = clamp(a[2], -1.0, 1.0)
@@ -337,14 +318,14 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     t0, t1 = env.t_span
     u0 = to_real_vec(env.current_state.data)
     prob = ODEProblem(SE_Fock_dynamics, u0, (t0, t1), (Δ, Ω))
-    sol  = solve(prob, Tsit5(); reltol=1e-6, abstol=1e-11,
+    sol  = solve(prob, Tsit5(); reltol=1e-7, abstol=1e-13,
                  save_everystep=false, save_start=false, save_on=false,
-                 maxiters=1e7)  # dt = 1e-7
+                 maxiters=2e6)  # dt = 1e-7
 
     env.current_state = Ket(env.current_state.basis, recomposition(sol.u[end]))
     normalize!(env.current_state)
 
-    # finestra successiva
+    
     Δt = t1 - t0
     env.t_span = (t1, t1 + Δt)
 
@@ -358,19 +339,14 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     
 
     if env.current_step ≥ env.max_steps || new_fidelity ≥ success_threshold
-        reward = 1 * (-log1p(-new_fidelity))  
+        reward = new_fidelity
         env.done = true
 
     else
 
-        if success_threshold < 0.98
-            #reward =  10*delta_fidelity 
-            reward = 6 * delta_fidelity
-
-        else
-            reward = new_fidelity^4
-
-        end
+        
+        reward = 6 * tanh(delta_fidelity)
+        #reward = 6 * tanh(new_fidelity)
 
         env.done = false
 
