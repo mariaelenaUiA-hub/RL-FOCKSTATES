@@ -1,23 +1,26 @@
 using ReinforcementLearning, ReinforcementLearningCore
 using .ReinforcementLearningBase
-using Statistics , Flux , Functors , Flux.Optimise, StableRNGs ,  Random, Zygote, Distributions, LinearAlgebra, QuantumOptics, DifferentialEquations, DiffEqFlux, OrdinaryDiffEq
+using Statistics , Flux , Functors , Flux.Optimise, StableRNGs ,  Random, Zygote, Distributions, LinearAlgebra, QuantumOptics, DifferentialEquations, DiffEqFlux, OrdinaryDiffEq, QuantumOpticsBase
 using Flux: Chain, Dense
 using IntervalSets: ClosedInterval 
 using Plots
+using LinearAlgebra
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Parametri dissipativi (kHz) 
 # ────────────────────────────────────────────────────────────────────────────────
-const κϕ =  20.0    # dephasing puro qubit
-const κ  =  19.0    # rilassamento qubit (σ⁻)
-const γm =  15.0    # smorzamento oscillatore (a)
 
-# conversione unità coerente con il tuo SE: kHz → rad/μs
-const RATE_SCALE = 2π * 1e-3
+Δ_max =  1e4
+κϕ =  20.0  / Δ_max
+κ  =  19.0    / Δ_max
+γm =  15/ Δ_max
 
-# ────────────────────────────────────────────────────────────────────────────────
-# 
-# ────────────────────────────────────────────────────────────────────────────────
+const kb = 1.3806488e-23
+hbar = 1
+Teq   = kb / (2 * pi * 1.054571817e−34) * 1e-3 * 10e-3
+nthm  = 1 / (exp(ωm / Teq) - 1)
+
 
 struct qubit
     basis::SpinBasis{1//2, Int64}
@@ -103,57 +106,13 @@ function Qubit_HO(N_mech, type_basis_mech::Symbol, type_basis_qubit)
 end
 
 
-function ME_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t)
-    Δ, Ω, ops = p
-    basis = ops.Ia.basis_l
-
-    # prendi le matrici dagli operatori dell’ENV, non da globali
-    Iad = ops.Iad.data; mI = ops.mI.data; Ia = ops.Ia.data; pI = ops.pI.data
-    zI  = ops.zI.data;  xI = ops.xI.data
-
-    H_JC   = g * (Iad * mI + Ia * pI)
-    H0     = (Δ / 2.0) * zI
-    H_drive= Ω * xI
-    H_tot  = H0 + H_JC + H_drive
-
-    ρ = recomposition_dm(u, basis)
-
-    c_ops = [
-        sqrt(κ )       * ops.mI,
-        sqrt(γm )       * ops.Ia,
-        sqrt((κϕ)/2.0) * ops.zI,
-    ]
-
-    L  = liouvillian(Operator(basis, H_tot * RATE_SCALE), c_ops)
-    dρ = L * ρ
-    dv = vec(dρ.data)
-    @inbounds for i in eachindex(dv)
-        du[2i-1] = real(dv[i]); du[2i] = imag(dv[i])
-    end
-    return nothing
-end
-
-function ME_Fock_problem!(tspan, p, ρ0::Operator)
-    return ODEProblem(ME_Fock_dynamics, to_real_vec_dm(ρ0), tspan, p)
-end
-
-function to_real_vec(vector::Vector{ComplexF64})
-    real_imag = Vector{Float64}(undef, 2 * length(vector))
-    for i in eachindex(vector)
-        real_imag[2i - 1] = real(vector[i])
-        real_imag[2i]     = imag(vector[i])
-    end
-    return real_imag
-end
-
-
 # ────────────────────────────────────────────────────────────────────────────────
 # RL ENVIRONMENT 
 # ────────────────────────────────────────────────────────────────────────────────
 mutable struct QuantumEnv <: RLBase.AbstractEnv
     operators::qubit_ho
-    target_proj::Operator          # <— proiettore |ψt⟩⟨ψt|
-    current_state::Operator        # ρ
+    target_state::Operator        
+    current_state::Operator    
     t_span::Tuple{Float64, Float64}
     max_steps::Int
     current_step::Int
@@ -163,51 +122,80 @@ end
 
 function QuantumEnv(N_cut_off::Int)
     qub, mech, ops = Qubit_HO(N_cut_off, :FockBasis, 1//2)
-    # ρ iniziale sulla base di ops
-    ψ0  = tensor(spindown(qub.basis), fockstate(mech.basis, 0))
-    ρ0  = dm(ψ0)
-    Pt  = target_projector(ops)  # <— proiettore costruito dalla BASE DI ops
-
-    t_step    = 0.3e-2
+    
+    initial_state  = tensor(spindown(qub.basis), fockstate(mech.basis, 0))
+    target_state = tensor(spindown(qub.basis), fockstate(mech.basis, N_mech))
+    
+    ρtarget  = dm(target_state)
+    ρ0  = dm(initial_state)
+    Δ_max =  1e4
+    t0 = 0.0
+    t_step    = 3e-5* Δ_max
+    t_span = (t0, t0 + t_step)
+    
     max_steps = 500
-    return QuantumEnv(ops, Pt, ρ0, (0.0, t_step), max_steps, 0, 0.0, false)
+
+    return QuantumEnv(ops, ρtarget, ρ0, t_span, max_steps, 0, 0.0, false)
 end
+
 function RLBase.action_space(env::QuantumEnv)
-    low_bound = -1
-    high_bound = 1
-    return  [ClosedInterval(low_bound, high_bound), ClosedInterval(low_bound, high_bound)]
+    low_bound_1 = -1
+    high_bound_1 = 1
+
+    low_bound_2 = -1
+    high_bound_2 = 1
+    return  [ClosedInterval(low_bound_1, high_bound_1), ClosedInterval(low_bound_2, high_bound_2)]
 end
 
 function RLBase.state_space(env::QuantumEnv)
-    # dimensione di Hilbert: d = 2*(N_cut_off+1)
+    #Hilbert: d = 2*(N_cut_off+1)
     d = 2 * (N_cut_off + 1)
-    # ρ è d×d complessa → 2*d^2 reali
+
     return [ClosedInterval(-1.0, 1.0) for _ in 1:(2*d*d)]
+end
+
+
+
+_mat_from_op(ρ::Operator) = begin
+    dρ = dense(ρ).data                   
+    return hasproperty(dρ, :data) ? dρ.data : dρ
+end
+
+# ρ ∈ C^{d×d}  →  v ∈ R^{2 d^2}  
+function to_real_vec_dm(ρ::Operator)
+    M = _mat_from_op(ρ)                  # Matrix{ComplexF64}
+    v = vec(M)
+    return vcat(real(v), imag(v))
+end
+
+
+function from_real_vec_dm(v::AbstractVector{<:Real}, basis)
+    d = dim(basis)
+    @assert length(v) == 2*d*d "Lunghezza vettore non coerente con la base"
+    h = length(v) ÷ 2
+    c = ComplexF64.(v[1:h], v[h+1:end])
+    M = reshape(c, d, d)
+    return Operator(basis, basis, M)
 end
 
 RLBase.state(env::QuantumEnv) = Float64.(to_real_vec_dm(env.current_state))
 RLBase.is_terminated(env::QuantumEnv) = env.done || env.current_step >= env.max_steps
 
 function RLBase.reset!(env::QuantumEnv)
-    qb  = env.operators.zI.basis_l.bases[1]
-    ho  = env.operators.zI.basis_l.bases[2]
-    ψ0  = tensor(spindown(qb), fockstate(ho, 0))
-    env.current_state = dm(ψ0)
+    qub_basis  = env.operators.zI.basis_l.bases[1]
+    mech_basis = env.operators.zI.basis_l.bases[2]
+    tensor(spindown(qub_basis), fockstate(mech_basis, 0))
+    env.current_state = dm(tensor(spindown(qub_basis), fockstate(mech_basis, 0)))
     env.current_step = 0; env.reward = 0.0; env.done = false
     Δt = env.t_span[2] - env.t_span[1]
     env.t_span = (0.0, Δt)
     return RLBase.state(env)
 end
 
-function target_projector(ops::qubit_ho)
-    qb  = ops.zI.basis_l.bases[1]
-    ho  = ops.zI.basis_l.bases[2]
-    ψt  = tensor(spindown(qb), fockstate(ho, N_mech))
-    return dm(ψt)   
-end
 # ────────────────────────────────────────────────────────────────────────────────
 # PPO 
 # ────────────────────────────────────────────────────────────────────────────────
+
 struct Actor
     chain::Chain
 end
@@ -216,9 +204,9 @@ Flux.@layer Actor
 function Actor(state_dim::Int, action_dim::Int)
     chain = Chain(
         Dense(state_dim, 256, tanh),
-        Dense(256, 128, tanh),
-        Dense(128, 64, tanh),
-        Dense(64, action_dim * 2)
+        Dense(256, 64, tanh),
+        Dense(64, 32, tanh),
+        Dense(32, action_dim * 2)
     )
     Actor(chain)
 end
@@ -246,9 +234,9 @@ Flux.@layer Critic
 function Critic(state_dim::Int)
     chain = Chain(
         Dense(state_dim, 256, tanh),
-        Dense(256, 128, tanh),
-        Dense(128, 64, tanh),
-        Dense(64, 1)
+        Dense(256, 64, tanh),
+        Dense(64, 32, tanh),
+        Dense(32, 1)
     )
     Critic(chain)
 end
@@ -280,93 +268,93 @@ function logprob_squashed(dist, a)
 end
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-# STEP dell’ambiente: ora evolve ρ con ME_Fock_dynamics e usa F = ⟨ψ_target|ρ|ψ_target⟩
-# ────────────────────────────────────────────────────────────────────────────────
-
-
-
-
-using LinearAlgebra
-
-# Uhlmann fidelity F(ρ, σ) = (Tr √( √ρ σ √ρ ))^2
-function uhlmann_fidelity(ρ::Operator, σ::Operator)
-    # Simmetrizza e rinormalizza leggermente per robustezza numerica
-    ρh = 0.5 * (ρ + dagger(ρ))
-    σh = 0.5 * (σ + dagger(σ))
-    ρm = Matrix(ρh.data)
-    σm = Matrix(σh.data)
-
-    trρ = real(tr(ρm));  trρ ≈ 0 && return 0.0
-    trσ = real(tr(σm));  trσ ≈ 0 && return 0.0
-    ρm ./= trρ
-    σm ./= trσ
-
-    # sqrt(ρ) via autovalori (ρ è Hermitiana PSD idealmente)
-    vals, vecs = eigen(Hermitian(ρm))
-    vals = clamp.(real.(vals), 0.0, Inf)
-    sqrtρ = vecs * Diagonal(sqrt.(vals)) * vecs'
-
-    # A = sqrtρ * σ * sqrtρ  (PSD)
-    A = sqrtρ * σm * sqrtρ
-    # Simmetrizza e prendi autovalori non negativi
-    λ = eigen(Hermitian(0.5 * (A + A'))).values
-    λ = clamp.(real.(λ), 0.0, Inf)
-
-    F = (sum(sqrt.(λ)))^2
-    return clamp(real(F), 0.0, 1.0)
-end
-
-function step!(env::QuantumEnv, a::Vector{Float64})
+function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     env.current_step += 1
     ops  = env.operators
-    Ptar = env.target_proj
-
+    
     # fidelity prima dello step
-    old_fid = uhlmann_fidelity(env.current_state, Ptar)
+    old_fid =  real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
-    # mapping azioni → controlli fisici (kHz)
-    Δ_max = 1e4
-    Ω_max = 1e4
-    Δ = Δ_max * clamp(a[1], -1.0, 1.0)
-    Ω = Ω_max * clamp(a[2], -1.0, 1.0)
+    a1 = float((a[1]+1)/2)
+    a2 = float(a[2])
 
-    # Hamiltoniana (Operator) sulla base di ops
-    H_JC   = g * (ops.Iad * ops.mI + ops.Ia * ops.pI)
-    H0     = (Δ / 2.0) * ops.zI
-    H_drive= Ω * ops.xI
-    H_tot  = (H0 + H_JC + H_drive) * RATE_SCALE
-
-    # Collapse operators (Operator)
-    c_ops = [
-        sqrt(κ * RATE_SCALE
-  )       * ops.mI,   # rilassamento qubit
-        sqrt(γm * RATE_SCALE
-)       * ops.Ia,   # smorzamento HO
-        sqrt((κϕ * RATE_SCALE
-)/2.0) * ops.zI,   # dephasing puro (fattore 1/2 sulle coerenze)
-    ]
-
-    # evoluzione Lindblad con il wrapper di QuantumOptics
-    t0, t1 = env.t_span
-    ts, rhos = timeevolution.master((t0, t1), env.current_state, H_tot, c_ops;
-                                    reltol=1e-7, abstol=1e-13)
-    env.current_state = rhos[end]
+    Δ_max =  1e4
+    Ω_max =  1e3
+    Δ = Δ_max * a1
+    Ω = Ω_max * a2
 
     
+    H_JC   = g/ Δ_max * (ops.Iad * ops.mI + ops.Ia * ops.pI)
+
+    Ω_(t) = Ω /Δ_max
+    Δ_(t) = Δ /Δ_max
+
+    Ht = LazySum([Ω_(0.), Δ_(0.)], [ops.xI, ops.zI])
+        function Hamiltonian(t, ψ)
+        Ht.factors[1] = Ω_(t)
+        Ht.factors[2] = Δ_(t)/2
+        return (H_JC + Ht) 
+    end
     
- 
-    # avanza finestra temporale
+    
+    
+    diss = [sqrt(κϕ/2)  * ops.zI, sqrt(κ) * ops.mI, sqrt(γm * (nthm+1))*ops.Ia, sqrt(γm*(nthm))*ops.Iad]
+    #diss_dag = dagger.([sqrt(γm * (nthm+1))*ops.Ia, sqrt(γm*(nthm))*ops.Iad, sqrt(κϕ/2)  * ops.zI, sqrt(κ) * ops.mI])
+    diss_dag = dagger.(diss)
+
+    dynamics_input = (t, ψ) -> (Hamiltonian(t, ψ), diss, diss_dag)
+
+
+    t0,t1 = env.t_span
+    t, sol = timeevolution.master_dynamic((t0,t1), env.current_state, dynamics_input; adaptive = true, reltol = 1e-9, abstol = 1e-13)
+    
+
+    ρnew = sol[end]
+
+    env.current_state = ρnew/tr(ρnew)
+
+
+
+
     Δt = t1 - t0
     env.t_span = (t1, t1 + Δt)
+    
+    
 
     # reward & done
-    new_fidelity   = uhlmann_fidelity(env.current_state, Ptar)
+    new_fidelity  = real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
+
+    p=4
+
     delta_fidelity = new_fidelity - old_fid
-    if env.current_step ≥ env.max_steps || new_fidelity ≥ SUCCESS_THR[]
-        reward = new_fidelity; env.done = true
+    delta_fidelity_p = new_fidelity^p -old_fid^p
+    success_threshold = SUCCESS_THR[] 
+    
+    r = exp(-1/new_fidelity)* delta_fidelity + (1-exp(-1/new_fidelity)) * delta_fidelity_p
+
+
+
+  
+    #reward = 10*tanh(r)
+    reward =  r 
+
+    
+    if delta_fidelity < 0
+
+        reward += 0.01*delta_fidelity
+
+    end
+
+    if env.current_step ≥ env.max_steps  
+
+         env.done = true
+
+    elseif new_fidelity ≥ success_threshold
+
+        env.done=true  #questo non puoi levarlo senno traiettorie piu lughe vincono
     else
-        reward = 6 * tanh(delta_fidelity); env.done = false
+         env.done = false
+        
     end
     return reward, env.done
 end
@@ -583,7 +571,7 @@ function maybe_bump_threshold!(episode_fidelities::Vector{Float64},
         SUCCESS_THR[] = min(SUCCESS_THR[] + hysteresis_margin, 1.0)
 
         thr = SUCCESS_THR[]
-        floor = if     thr < 0.95;   0.02 elseif thr < 0.99; 0.005 elseif thr < 0.995; 0.001 else 1e-4 end
+        floor = if     thr < 0.85;   0.02 elseif thr < 0.99; 0.005 elseif thr < 0.995; 0.001 else 1e-4 end
         decay = (thr < 0.99) ? 0.997 : 0.98
         agent.entropy_loss_weight = max(agent.entropy_loss_weight * decay, floor)
         if !isfinite(agent.entropy_loss_weight); agent.entropy_loss_weight = floor; end

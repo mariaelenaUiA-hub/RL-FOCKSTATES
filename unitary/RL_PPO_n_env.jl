@@ -126,6 +126,8 @@ xI = HBAR_qubit.xI.data
 
 H_JC = g * (Iad * mI  + Ia * pI) 
 
+
+
 function SE_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t) 
     Δ, Ω = p[1],p[2]
 
@@ -139,7 +141,8 @@ function SE_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t)
 
 
     ψ = u[1:2:end] + im * u[2:2:end]
-    dψ = -1im * H_tot* 1e-3 * 2 * π * ψ
+    dψ = -1im * H_tot * 2 * π * ψ 
+
 
     for i in eachindex(dψ)
         du[2i-1] = real(dψ[i])
@@ -152,6 +155,12 @@ end
 function SE_Fock_problem!(tspan, p, ψ0)
     return ODEProblem(SE_Fock_dynamics, to_real_vec(ψ0), tspan, p)
 end
+
+
+
+
+
+
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -181,11 +190,11 @@ function QuantumEnv(N_cut_off::Int)
 
 
     t0 = 0.0
-    t_step =   0.3e-2
+    t_step =   0.3e-5
 
-    #t_step =   0.3e-4
+    #t_step =   0.3e-5
     
-    max_steps = 500 #500
+    max_steps = 400 #500
 
 
     t_span = (t0, t0 + t_step)
@@ -235,9 +244,9 @@ Flux.@layer Actor
 
 function Actor(state_dim::Int, action_dim::Int)
     chain = Chain(
-    Dense(state_dim, 256, tanh),
-    Dense(256, 128, tanh),
-    Dense(128, 64, tanh),
+    Dense(state_dim, 64, tanh),
+    Dense(64, 64, tanh),
+    #Dense(64, 32, tanh),
     Dense(64, action_dim * 2)
     )
     Actor(chain)
@@ -264,7 +273,7 @@ function (actor::Actor)(state)
     
 
     σ = exp.(log_σ)
-    σ = clamp.(σ, 1e-5, 5.0)  # evita 0 e valori enormi
+    σ = clamp.(σ, 1e-5, 5.0)  
     
         
     # This will now work for both cases
@@ -279,9 +288,9 @@ Flux.@layer Critic
 
 function Critic(state_dim::Int)
     chain = Chain(
-        Dense(state_dim, 256, tanh),
-        Dense(256, 128, tanh),
-        Dense(128, 64, tanh),
+        Dense(state_dim, 64, tanh),
+        Dense(64, 64, tanh),
+        #Dense(64, 32, tanh),
         Dense(64, 1)
     )
     Critic(chain)
@@ -304,21 +313,23 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     old_fid = abs2(env.target_state' * env.current_state)
 
     # ---- mapping azioni → controlli fisici (kHz) ----
-    Δ_max = 6e4
-    Ω_max = 5e4
+    Δ_max = 5e3
+    Δ_min = g / sqrt(2)
+    Ω_max = Δ_max^2 /g
+    
 
     a1 = clamp(a[1], -1.0, 1.0)
     a2 = clamp(a[2], -1.0, 1.0)
-
-    Δ = Δ_max * a1
-    Ω  = Ω_max * a2
-
+    
+    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
+    Δ = a1 * Δ_max
+    Ω = a2 *  Ω_max
     
     # ---- integrazione su tempo CONTINUO ----
     t0, t1 = env.t_span
     u0 = to_real_vec(env.current_state.data)
     prob = ODEProblem(SE_Fock_dynamics, u0, (t0, t1), (Δ, Ω))
-    sol  = solve(prob, Tsit5(); reltol=1e-7, abstol=1e-13,
+    sol  = solve(prob, Tsit5(); reltol=1e-9, abstol=1e-13,
                  save_everystep=false, save_start=false, save_on=false,
                  maxiters=2e6)  # dt = 1e-7
 
@@ -335,8 +346,7 @@ function step!(env::QuantumEnv, a::Vector{Float64})
 
     success_threshold = SUCCESS_THR[] 
    
-    
-    
+
 
     if env.current_step ≥ env.max_steps || new_fidelity ≥ success_threshold
         reward = new_fidelity
@@ -345,8 +355,8 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     else
 
         
-        reward = 6 * tanh(delta_fidelity)
-        #reward = 6 * tanh(new_fidelity)
+        reward = 6 *tanh(delta_fidelity)
+        #reward = new_fidelity
 
         env.done = false
 
@@ -430,7 +440,7 @@ mutable struct PPOAgent
     buffer::PPOBuffer
 end
 
-Functors.@functor PPOAgent (policy,)  # va bene così; gli opt_state non sono parametri
+Functors.@functor PPOAgent (policy,)  
 
 
 function PPOAgent(
@@ -596,97 +606,118 @@ end
 # PPO Logic - Versione corretta
 # ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-
 function maybe_bump_threshold!(episode_fidelities::Vector{Float64},
                                sr_hist::Vector{Float64},
                                agent::PPOAgent;
-                               best_fid::Float64=0.0,          # opzionale, non usato qui
-                               W::Int=10,
-                               K::Int=6,
+                               best_fid::Float64=0.0,
+                               W::Int=10, K::Int=6,
                                sr_target::Union{Nothing,Float64}=nothing,
-                               q_level::Float64=0.5,           # quantile robusto (0.5 = mediana)
-                               q_factor::Float64=0.95,         # richiede qF ≥ q_factor * soglia
-                               hysteresis_margin::Float64=1e-4,# isteresi per evitare ping-pong
-                               cooldown::Int=5,
+                               q_level::Float64=0.75,      # più severo
+                               q_factor::Float64=1.0,      # richiedi >= soglia
+                               hysteresis_margin::Float64=1e-4,
+                               cooldown::Int=30,           # un po' più lungo
                                episode::Int=0,
                                debug::Bool=true,
-                               reset_on_bump::Bool=false)
-    # fine ladder
+                               reset_on_bump::Bool=false,
+                               confirm_windows::Int=2,     # # finestre consecutive
+                               rollback_windows::Int=3,    # # finestre per rollback
+                               rollback_cooldown::Int=50)  # separato dal bump
+    # niente bump alla fine della ladder
     if THR_IDX[] >= length(THR_LADDER); return nothing; end
-    n = length(sr_hist)
-    m = length(episode_fidelities)
+    n = length(sr_hist); m = length(episode_fidelities)
     if n == 0 || m == 0; return nothing; end
 
-    # rispetto cooldown
+    # cooldown bump
     if episode != 0 && (episode - LAST_BUMP_EP[]) < cooldown
         return nothing
     end
 
-    W_eff = min(W, n, m)
-    K_eff = min(K, n)
-
+    W_eff = max(1, min(W, n, m))
+    K_eff = max(1, min(K, n))
     w_sr = sr_hist[end-W_eff+1:end]
     w_f  = episode_fidelities[end-W_eff+1:end]
+    # pulizia NaN
+    w_f = filter(!isnan, w_f); if isempty(w_f); return nothing; end
 
     sr_win    = mean(w_sr)
     sr_streak = mean(sr_hist[end-K_eff+1:end])
     curr_thr  = SUCCESS_THR[]
 
     # statistiche robuste
-    qf    = quantile(w_f, q_level)     # es. mediana se q_level=0.5
-    medF  = Statistics.median(w_f)
+    ql = (W_eff < 3 ? 0.5 : q_level)
+    qf   = quantile(w_f, ql)
+    medF = Statistics.median(w_f)
 
-    # target SR dinamico semplice
+    # target SR dinamico (più permissivo quando sei già alto)
     dyn_target = sr_target === nothing ? (medF ≥ 0.90 ? 0.60 : (medF ≥ 0.85 ? 0.70 : 0.80)) : sr_target
 
-    # condizione per bump: SR buono e quantile F non troppo sotto soglia
-    do_bump = (sr_win ≥ dyn_target || sr_streak ≥ dyn_target) &&
-              (qf ≥ q_factor * curr_thr)
+    # mantieni uno storico locale delle ultime finestre
+    # (qui lo stimiamo dal contenuto della finestra corrente; per una versione rigorosa accumula in stato esterno)
+    cond_ok = ( (sr_win ≥ dyn_target || sr_streak ≥ dyn_target) && (qf ≥ q_factor * curr_thr) )
 
-    if do_bump
+    # === conferma su più finestre (grezza: ripeti check su K_eff sottoinsiemi) ===
+    # semplice approssimazione: se sr_streak e sr_win sono entrambi ≥ dyn_target, consideriamo confermata
+    confirmed = cond_ok && (sr_win ≥ dyn_target && sr_streak ≥ dyn_target)
+
+    if confirmed
+        # (opzionale) contatore esterno di conferme; qui assumiamo che confirmed implichi conferma sufficiente
+        # ---- BUMP ----
         old_thr = curr_thr
-        THR_IDX[] += 1
-        THR_IDX[] = min(THR_IDX[], length(THR_LADDER))   # guardia
-        SUCCESS_THR[] = THR_LADDER[THR_IDX[]]
+        THR_IDX[] = min(THR_IDX[] + 1, length(THR_LADDER))
+        SUCCESS_THR[] = min(THR_LADDER[THR_IDX[]] + hysteresis_margin, 1.0)
 
-        # isteresi: sposta leggermente la soglia effettiva per evitare rimbalzi
-        SUCCESS_THR[] = min(SUCCESS_THR[] + hysteresis_margin, 1.0)
-
-        # === ENTROPIA: aggiorna a scalini quando la soglia avanza ===
+        # annealing entropia
         thr = SUCCESS_THR[]
-        floor = if     thr < 0.95;   0.02      # early: esplora di più
-                elseif thr < 0.99;   0.005     # mid
-                elseif thr < 0.995;  0.001     # late
-                else                 1e-4      # fine-tuning
-                end
-        decay = (thr < 0.99) ? 0.997 : 0.98    # più rapido sopra 0.99
-        agent.entropy_loss_weight = max(agent.entropy_loss_weight * decay, floor)
-        if !isfinite(agent.entropy_loss_weight)
-            agent.entropy_loss_weight = floor
-        end
-        # ============================================================
+        floor = (thr < 0.95 ? 0.02 : thr < 0.99 ? 0.005 : thr < 0.995 ? 0.001 : 1e-4)
+        decay = (thr < 0.99) ? 0.997 : 0.98
+        agent.entropy_loss_weight = max(isfinite(agent.entropy_loss_weight) ? agent.entropy_loss_weight * decay : floor, floor)
 
         LAST_BUMP_EP[] = (episode == 0 ? LAST_BUMP_EP[] : episode)
 
         if debug
             @info "↑ Threshold: $(round(old_thr; digits=3)) → $(round(SUCCESS_THR[]; digits=3))  " *
                   "(SR_win=$(round(sr_win; digits=2)), SR_streak=$(round(sr_streak; digits=2)), " *
-                  "q$(Int(round(q_level*100)))F=$(round(qf; digits=3)), medianF=$(round(medF; digits=3)), " *
+                  "q$(Int(round(ql*100)))F=$(round(qf; digits=3)), medianF=$(round(medF; digits=3)), " *
                   "SR*=$(round(dyn_target; digits=2)), W=$(W_eff))"
         end
+        if reset_on_bump; empty!(sr_hist); empty!(episode_fidelities); end
 
-        if reset_on_bump
-            empty!(sr_hist); empty!(episode_fidelities)
+        return nothing
+    end
+
+    # ---- ROLLBACK (se bloccato) ----
+    # condizione: SR molto basso e mediana ben sotto soglia per più finestre
+    if THR_IDX[] > 1 && episode != 0 && (episode - LAST_BUMP_EP[]) ≥ rollback_cooldown
+        stuck_sr  = sr_win ≤ 0.10
+        stuck_fid = medF ≤ (curr_thr - 0.10)
+        if stuck_sr && stuck_fid
+            # una semplice conferma su più finestre: richiedi che la condizione sia vera anche per la finestra precedente
+            # (se vuoi farlo in modo rigoroso mantieni una coda di flag)
+            old_thr = curr_thr
+            THR_IDX[] = max(1, THR_IDX[] - 1)
+            SUCCESS_THR[] = THR_LADDER[THR_IDX[]]  # niente hysteresis qui
+            LAST_BUMP_EP[] = episode  # riusa il timestamp per il cooldown
+
+            # mini reset esplorazione
+            agent.entropy_loss_weight *= 1.5
+
+            if debug
+                @info "↓ Rollback threshold: $(round(old_thr; digits=3)) → $(round(SUCCESS_THR[]; digits=3))  " *
+                      "(SR_win=$(round(sr_win; digits=2)), medianF=$(round(medF; digits=3)))"
+            end
+            return nothing
         end
+    end
 
-    elseif debug && episode % 5 == 0
+    if debug && episode % 5 == 0
         @info "No bump (W=$(W_eff),K=$(K_eff)): SR_win=$(round(sr_win; digits=2)), " *
               "SR_streak=$(round(sr_streak; digits=2)), " *
-              "q$(Int(round(q_level*100)))F=$(round(qf; digits=3)) vs $(round(q_factor*curr_thr; digits=3)), " *
+              "q$(Int(round(ql*100)))F=$(round(qf; digits=3)) vs $(round(q_factor*curr_thr; digits=3)), " *
               "medianF=$(round(medF; digits=3)), SR*=$(round(dyn_target; digits=2)), Thr=$(round(curr_thr; digits=3))"
     end
     return nothing
 end
+
 
 
 
@@ -818,7 +849,6 @@ function update_policy!(agent::PPOAgent, bootstrap_by_env::Vector{Float64})
         end
     end
 end
-
 
 
 

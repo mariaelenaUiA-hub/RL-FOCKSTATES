@@ -15,18 +15,18 @@ include("RL_PPO_n_env.jl")
 # --- PPO Hyperparameters 
 BATCH_SIZE = 64;
 LAST_BUMP_EP = Ref(0)
-THR_LADDER = [ 0.80,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.970,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
+THR_LADDER = [0.60,0.70, 0.75,0.80,0.85,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.96,0.965,0.970,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
-N_UPDATE_EPOCHS = 4;
+N_UPDATE_EPOCHS = 6;
 GAMMA = 0.99 ;
 LAMBDA = 0.95;
 CLIP_RANGE = 0.2 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
 CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
-LR_ACTOR = 0.5e-5; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
-LR_CRITIC = 0.5e-5 ;# Learning rate for the critic network
+LR_ACTOR = 0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
+LR_CRITIC = 0.5e-4 ;# Learning rate for the critic network
 N_ROLLOUT = 8* 500
 N_ENV = 8;
 n_envs = N_ENV;
@@ -76,7 +76,7 @@ agent = PPOAgent(
     
 );
 
-using Flux.Optimisers: OptimiserChain, ClipNorm, Adam
+
 agent.actor_optimizer  = OptimiserChain(ClipNorm(0.5), Adam(LR_ACTOR));
 agent.critic_optimizer = OptimiserChain(ClipNorm(0.5), Adam(LR_CRITIC));
 
@@ -218,26 +218,29 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 5000;
+num_episodes = 500;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
 
 
 
-@save "unitary/plots & data//re.jld2" all_rewards all_fidelities best_actions 
+@save "unitary/plots & data//res.jld2" all_rewards all_fidelities best_actions  
 
 function evolution_step_from_action(a::Tuple{<:Real,<:Real}, ψ0::Ket, tspan::Tuple{Float64,Float64})
     a1, a2 = a
     a1 = clamp(a[1], -1.0, 1.0)
     a2 = clamp(a[2], -1.0, 1.0)
     
-    Δ_max = 5e4    
-    Ω_max = 5e4     
-   
-    Δ  = Δ_max *a1  
-    Ω  = Ω_max *a2          # kHz
+    Δ_max = 5e3
+    Δ_min = g / sqrt(2)
+    Ω_max = Δ_max^2 /g
+    
+
 
     
+    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
+    Δ = a1 * Δ_max
+    Ω = a2 *  Ω_max
     
 
     H0      = dense((Δ/2.0) * HBAR_qubit.zI)
@@ -245,25 +248,25 @@ function evolution_step_from_action(a::Tuple{<:Real,<:Real}, ψ0::Ket, tspan::Tu
     H_JC    = dense(g * (HBAR_qubit.Iad * HBAR_qubit.mI + HBAR_qubit.Ia * HBAR_qubit.pI))
 
     # Hamiltoniana (time-independent qui, ma la firma accetta H(t,ψ))
-    H(t, ψ) =  2 * π * 1e-3 * (H0 + H_drive + H_JC)
+    H(t, ψ) =  2 * π * (H0 + H_drive + H_JC)
 
     ts, ψt = timeevolution.schroedinger_dynamic(tspan, ψ0, H )
     exp_mech = expect(HBAR_qubit.n_mech,  ψt)
     exp_qub  = expect(HBAR_qubit.n_qubit, ψt)
     return real.(exp_mech), real.(exp_qub), ψt
-end 
+end  
 
 
 # ----------------- rollout deterministico con best_actions -----------------
-t0 = 0.0;
+t0 = 0.0; 
 
-Δt = 0.3e-2  ;  
+Δt =  0.3e-5  ;   
 
-ψ0 = tensor(spindown(qub.basis), fockstate(mech.basis, 0));
+ψ0 = tensor(spindown(qub.basis), fockstate(mech.basis, 0)); 
 
-solution     = Ket[ψ0];
-exp_values   = Float64[0.0];
-exp_values_q = Float64[0.0];
+solution     = Ket[ψ0]; 
+exp_values   = Float64[0.0]; 
+exp_values_q = Float64[0.0]; 
 
 for step in eachindex(best_actions)
     p = best_actions[step]
@@ -322,7 +325,7 @@ p = plot( exp_values;
      title="Occupancy",
      legend=:outertopright,
       size=(1200,800),
-      legendtitle="Fidelity finale = 0.9998024937",
+      legendtitle="Fidelity finale = 0.9997379070294207",
       grid=true);
 
 plot!(p, exp_values_q; label="⟨n_qubit⟩")
@@ -347,21 +350,24 @@ function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
 
     a1 = a_mat[1, :]                # in [-1,1]
     a2 = a_mat[2, :]
-    Δ = Δ_max .* a1                # kHz
-    Ω = Ω_max .* a2                # kHz
+    Δ_max = 5e3
+    Δ_min = g / sqrt(2)
+    Ω_max = Δ_max^2 /g
 
+    
+    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
+    Δ = a1 * Δ_max
+    Ω = a2 *  Ω_max
+    
     p = plot(layout=(2,1), link=:x, size=(1200,800))
     plot!(p[1], steps, Δ, xlabel="step", ylabel="Δ [Hz]", legend=false, grid=true, framestyle=:box)
     plot!(p[2], steps, Ω,  xlabel="step", ylabel="Ω  [Hz]", legend=false, grid=true, framestyle=:box)
     display(p)
     return p
 end
+Δ_max = 5e3
 
-
-
-Δ_max = 5e4   ;   
-Ω_max = 5e4   ;   
-
+Ω_max = Δ_max^2 /g
 
 plot_best_actions = plot_best_controls(best_actions; ωm=ωm, Δ_max=Δ_max, Ω_max=Ω_max)
 
@@ -375,5 +381,4 @@ a = 1-fid
 plot_f = plot(all_fidelities;
     label="Fidelity",
     title="Fidelity")
-
 
