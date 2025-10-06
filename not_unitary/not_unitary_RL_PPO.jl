@@ -11,16 +11,29 @@ using LinearAlgebra
 # Parametri dissipativi (kHz) 
 # ────────────────────────────────────────────────────────────────────────────────
 
+#=
 Δ_max =  1e4
-κϕ =  20.0  / Δ_max
-κ  =  19.0    / Δ_max
-γm =  15/ Δ_max
+κϕ =  0.25 / Δ_max
+κ  =  19 / Δ_max
+γm =  0.025 / Δ_max
 
-const kb = 1.3806488e-23
-hbar = 1
-Teq   = kb / (2 * pi * 1.054571817e−34) * 1e-3 * 10e-3
-nthm  = 1 / (exp(ωm / Teq) - 1)
+kb = 1.3806488e-23
+hbar_= 1.054571817e-34
 
+Teq   = 1e-2
+nthm  = 1 / (exp((ωm*1e3*hbar_) / (Teq*kb)) - 1)
+=#
+
+Δ_max =  1e4
+κϕ =  0
+κ  =  
+γm =  0
+
+kb = 1.3806488e-23
+hbar_= 1.054571817e-34
+
+Teq   = 1e-2
+nthm  = 1 / (exp((ωm*1e3*hbar_) / (Teq*kb)) - 1)
 
 struct qubit
     basis::SpinBasis{1//2, Int64}
@@ -133,17 +146,17 @@ function QuantumEnv(N_cut_off::Int)
     t_step    = 3e-5* Δ_max
     t_span = (t0, t0 + t_step)
     
-    max_steps = 500
+    max_steps = 300
 
     return QuantumEnv(ops, ρtarget, ρ0, t_span, max_steps, 0, 0.0, false)
 end
 
 function RLBase.action_space(env::QuantumEnv)
-    low_bound_1 = -1
-    high_bound_1 = 1
+    low_bound_1 = -1.
+    high_bound_1 = 1.
 
-    low_bound_2 = -1
-    high_bound_2 = 1
+    low_bound_2 = -1.
+    high_bound_2 = 1.
     return  [ClosedInterval(low_bound_1, high_bound_1), ClosedInterval(low_bound_2, high_bound_2)]
 end
 
@@ -204,7 +217,8 @@ Flux.@layer Actor
 function Actor(state_dim::Int, action_dim::Int)
     chain = Chain(
         Dense(state_dim, 256, tanh),
-        Dense(256, 64, tanh),
+        Dense(256,128,tanh),
+        Dense(128, 64, tanh),
         Dense(64, 32, tanh),
         Dense(32, action_dim * 2)
     )
@@ -215,14 +229,15 @@ function (actor::Actor)(state)
     x = actor.chain(state)
     action_dim = size(x, 1) ÷ 2
     if ndims(x) == 1
-        μ = x[1:action_dim]
+        μ     = x[1:action_dim]
         log_σ = x[action_dim + 1 : end]
     else
-        μ = x[1:action_dim, :]
+        μ     = x[1:action_dim, :]
         log_σ = x[action_dim + 1 : end, :]
     end
-    σ = exp.(log_σ)
-    σ = clamp.(σ, 1e-5, 5.0)
+    log_σ = clamp.(log_σ, -20.0, 2.0)
+    σ     = log1p.(exp.(log_σ)) .+ 1e-6    # softplus + eps
+    σ     = clamp.(σ, 1e-5, 5.0) 
     return Normal.(μ, σ)
 end
 
@@ -233,9 +248,10 @@ Flux.@layer Critic
 
 function Critic(state_dim::Int)
     chain = Chain(
-        Dense(state_dim, 256, tanh),
-        Dense(256, 64, tanh),
-        Dense(64, 32, tanh),
+        Dense(state_dim, 256, relu),
+        Dense(256,128,relu),
+        Dense(128, 64, relu),
+        Dense(64, 32, relu),
         Dense(32, 1)
     )
     Critic(chain)
@@ -275,19 +291,19 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     # fidelity prima dello step
     old_fid =  real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
-    a1 = float((a[1]+1)/2)
-    a2 = float(a[2])
+    a1 = (a[1]+1)/2
+    a2 = a[2]
 
     Δ_max =  1e4
-    Ω_max =  1e3
-    Δ = Δ_max * a1
-    Ω = Ω_max * a2
+    Ω_max_ =  1e3 /Δ_max
+    Δ = a1
+    Ω = Ω_max_ * a2
 
     
-    H_JC   = g/ Δ_max * (ops.Iad * ops.mI + ops.Ia * ops.pI)
+    H_JC   = (g/ Δ_max) * (ops.Iad * ops.mI + ops.Ia * ops.pI)
 
-    Ω_(t) = Ω /Δ_max
-    Δ_(t) = Δ /Δ_max
+    Ω_(t) = Ω 
+    Δ_(t) = Δ 
 
     Ht = LazySum([Ω_(0.), Δ_(0.)], [ops.xI, ops.zI])
         function Hamiltonian(t, ψ)
@@ -324,19 +340,24 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     # reward & done
     new_fidelity  = real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
-    p=4
+    p=3
 
     delta_fidelity = new_fidelity - old_fid
     delta_fidelity_p = new_fidelity^p -old_fid^p
     success_threshold = SUCCESS_THR[] 
+
+
+    w = exp(-30 * max(0.0,  success_threshold - new_fidelity))  # α≈20–30
+    r = (1 - w)*delta_fidelity + w*delta_fidelity_p
     
-    r = exp(-1/new_fidelity)* delta_fidelity + (1-exp(-1/new_fidelity)) * delta_fidelity_p
+
+    reward = 10*r 
 
 
+    reward += 2.0 * max(0.0, new_fidelity - success_threshold[])
 
-  
-    #reward = 10*tanh(r)
-    reward =  r 
+
+    #reward = 6 *tanh(delta_fidelity)
 
     
     if delta_fidelity < 0
@@ -350,7 +371,8 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
          env.done = true
 
     elseif new_fidelity ≥ success_threshold
-
+        reward += 100 * (new_fidelity-success_threshold)
+        #reward = new_fidelity
         env.done=true  #questo non puoi levarlo senno traiettorie piu lughe vincono
     else
          env.done = false
