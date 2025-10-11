@@ -11,8 +11,11 @@ using LinearAlgebra
 # Parametri dissipativi (kHz) 
 # ────────────────────────────────────────────────────────────────────────────────
 
-#=
-Δ_max =  1e4
+
+Δ_max =  1e5
+g  = 358*2*pi
+#g = 2* π * 41
+g  =  g/Δ_max
 κϕ =  0.25 / Δ_max
 κ  =  19 / Δ_max
 γm =  0.025 / Δ_max
@@ -22,18 +25,7 @@ hbar_= 1.054571817e-34
 
 Teq   = 1e-2
 nthm  = 1 / (exp((ωm*1e3*hbar_) / (Teq*kb)) - 1)
-=#
 
-Δ_max =  1e4
-κϕ =  0
-κ  =  
-γm =  0
-
-kb = 1.3806488e-23
-hbar_= 1.054571817e-34
-
-Teq   = 1e-2
-nthm  = 1 / (exp((ωm*1e3*hbar_) / (Teq*kb)) - 1)
 
 struct qubit
     basis::SpinBasis{1//2, Int64}
@@ -131,6 +123,10 @@ mutable struct QuantumEnv <: RLBase.AbstractEnv
     current_step::Int
     reward::Float64
     done::Bool
+    prev_Δ::Float64
+    prev_Ω::Float64
+
+
 end
 
 function QuantumEnv(N_cut_off::Int)
@@ -141,14 +137,14 @@ function QuantumEnv(N_cut_off::Int)
     
     ρtarget  = dm(target_state)
     ρ0  = dm(initial_state)
-    Δ_max =  1e4
+    
     t0 = 0.0
-    t_step    = 3e-5* Δ_max
+    t_step    = 9e-2
     t_span = (t0, t0 + t_step)
     
     max_steps = 300
 
-    return QuantumEnv(ops, ρtarget, ρ0, t_span, max_steps, 0, 0.0, false)
+    return QuantumEnv(ops, ρtarget, ρ0, t_span, max_steps, 0, 0.0, false,0.0,0.0)
 end
 
 function RLBase.action_space(env::QuantumEnv)
@@ -294,13 +290,27 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     a1 = (a[1]+1)/2
     a2 = a[2]
 
-    Δ_max =  1e4
-    Ω_max_ =  1e3 /Δ_max
+    
+    Ω_max = 1
+    #Δ_max  = 1
     Δ = a1
-    Ω = Ω_max_ * a2
+    Ω = Ω_max * a2
+    
+    
+    
+    
+
+    Δ_prev = env.prev_Δ
+    Ω_prev = env.prev_Ω
+
+
+    Δ_Δ = abs(Δ_prev - Δ)
+    Δ_Ω = abs(Ω_prev - Ω)
+
+
 
     
-    H_JC   = (g/ Δ_max) * (ops.Iad * ops.mI + ops.Ia * ops.pI)
+    H_JC   = g * (ops.Iad * ops.mI + ops.Ia * ops.pI)
 
     Ω_(t) = Ω 
     Δ_(t) = Δ 
@@ -336,7 +346,7 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     env.t_span = (t1, t1 + Δt)
     
     
-
+ 
     # reward & done
     new_fidelity  = real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
@@ -358,7 +368,21 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
 
 
     #reward = 6 *tanh(delta_fidelity)
+    if env.current_step > 1
+        if Δ_Δ > 0.02
+        reward -= 0.01
 
+        end
+
+        if Δ_Ω > 0.05
+        reward -= 0.01
+
+        end
+    end
+
+
+    env.prev_Δ = Δ
+    env.prev_Ω = Ω
     
     if delta_fidelity < 0
 

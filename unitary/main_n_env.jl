@@ -6,8 +6,9 @@ using JLD2
 plotlyjs()
 using Statistics
 N_cut_off = 6;
-N_mech    = 1;
-g         = 258.0;
+N_mech    = 2;
+#g         = 258.0;
+g         = 350*2*pi;
 global ωm = 5.9614e6;
 
 include("RL_PPO_n_env.jl")
@@ -15,10 +16,10 @@ include("RL_PPO_n_env.jl")
 # --- PPO Hyperparameters 
 BATCH_SIZE = 64;
 LAST_BUMP_EP = Ref(0)
-THR_LADDER = [0.60,0.70, 0.75,0.80,0.85,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.96,0.965,0.970,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
+THR_LADDER = [0.40,0.50,0.55,0.60,0.65,0.70, 0.75,0.80,0.85,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.96,0.965,0.970,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
-N_UPDATE_EPOCHS = 6;
+N_UPDATE_EPOCHS = 4;
 GAMMA = 0.99 ;
 LAMBDA = 0.95;
 CLIP_RANGE = 0.2 #provare 0.3 forse??;
@@ -27,7 +28,7 @@ CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
 LR_ACTOR = 0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
 LR_CRITIC = 0.5e-4 ;# Learning rate for the critic network
-N_ROLLOUT = 8* 500
+N_ROLLOUT = 1024
 N_ENV = 8;
 n_envs = N_ENV;
 # --- 
@@ -218,37 +219,37 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 500;
+num_episodes = 1000;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
 
 
 
-@save "unitary/plots & data//res.jld2" all_rewards all_fidelities best_actions  
+@save "unitary_bis/plots & data//results_1.jld2" all_rewards all_fidelities best_actions  
 
 function evolution_step_from_action(a::Tuple{<:Real,<:Real}, ψ0::Ket, tspan::Tuple{Float64,Float64})
     a1, a2 = a
-    a1 = clamp(a[1], -1.0, 1.0)
+    a1 = (a[1]+1)/2
     a2 = clamp(a[2], -1.0, 1.0)
     
-    Δ_max = 5e3
-    Δ_min = g / sqrt(2)
-    Ω_max = Δ_max^2 /g
+    Δ_max = 1e4
+    
+    Ω_max_ = 1e3 / Δ_max
     
 
 
     
-    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
-    Δ = a1 * Δ_max
-    Ω = a2 *  Ω_max
+    
+    Δ = a1 
+    Ω = a2 *  Ω_max_
     
 
     H0      = dense((Δ/2.0) * HBAR_qubit.zI)
     H_drive = dense(Ω      * HBAR_qubit.xI)
-    H_JC    = dense(g * (HBAR_qubit.Iad * HBAR_qubit.mI + HBAR_qubit.Ia * HBAR_qubit.pI))
+    H_JC    = dense((g/Δ_max) * (HBAR_qubit.Iad * HBAR_qubit.mI + HBAR_qubit.Ia * HBAR_qubit.pI))
 
     # Hamiltoniana (time-independent qui, ma la firma accetta H(t,ψ))
-    H(t, ψ) =  2 * π * (H0 + H_drive + H_JC)
+    H(t, ψ) =   H0 + H_drive + H_JC
 
     ts, ψt = timeevolution.schroedinger_dynamic(tspan, ψ0, H )
     exp_mech = expect(HBAR_qubit.n_mech,  ψt)
@@ -260,7 +261,7 @@ end
 # ----------------- rollout deterministico con best_actions -----------------
 t0 = 0.0; 
 
-Δt =  0.3e-5  ;   
+Δt =  3e-5 * Δ_max ;   
 
 ψ0 = tensor(spindown(qub.basis), fockstate(mech.basis, 0)); 
 
@@ -296,7 +297,7 @@ target = tensor(spindown(qub.basis), fockstate(mech.basis, N_mech));
 fid = abs2(dot(target.data, solution[end].data));
 println("Fidelity finale = ", fid);
 
-plot_mech = plot(exp_values;
+plot_mech = plot(exp_values;  
     label="⟨n_mech⟩",
     xlabel="step",
     ylabel="value",
@@ -310,7 +311,7 @@ plot_q = plot(exp_values_q;
 
 plot_tot = display(plot(plot_mech, plot_q, layout=(2,1), size=(1000,800)))
 
-savefig("unitary/plots & data/plot_4.pdf")
+savefig("unitary/plots & data/plot_1.pdf")
 savefig(plot_mech,"unitary/plots & data/plot_mech_4.pdf")
 savefig(plot_q,"unitary/plots & data/plot_q_4.pdf")
 
@@ -325,12 +326,12 @@ p = plot( exp_values;
      title="Occupancy",
      legend=:outertopright,
       size=(1200,800),
-      legendtitle="Fidelity finale = 0.9997379070294207",
+      legendtitle="Fidelity finale = $(round(fid; digits=5))" ,
       grid=true);
 
 plot!(p, exp_values_q; label="⟨n_qubit⟩")
 
-savefig(p, "unitary/plots & data/occupancy_4.pdf")
+savefig(p, "unitary_bis/plots & data/occupancy_1.pdf")
 
 
 
@@ -350,14 +351,14 @@ function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
 
     a1 = a_mat[1, :]                # in [-1,1]
     a2 = a_mat[2, :]
-    Δ_max = 5e3
-    Δ_min = g / sqrt(2)
-    Ω_max = Δ_max^2 /g
+    Δ_max = 1e4
+    
+    Ω_max_ = 1e3/Δ_max
 
     
-    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
-    Δ = a1 * Δ_max
-    Ω = a2 *  Ω_max
+    
+    Δ = a1 
+    Ω = a2 *  Ω_max_
     
     p = plot(layout=(2,1), link=:x, size=(1200,800))
     plot!(p[1], steps, Δ, xlabel="step", ylabel="Δ [Hz]", legend=false, grid=true, framestyle=:box)
@@ -365,9 +366,6 @@ function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
     display(p)
     return p
 end
-Δ_max = 5e3
-
-Ω_max = Δ_max^2 /g
 
 plot_best_actions = plot_best_controls(best_actions; ωm=ωm, Δ_max=Δ_max, Ω_max=Ω_max)
 

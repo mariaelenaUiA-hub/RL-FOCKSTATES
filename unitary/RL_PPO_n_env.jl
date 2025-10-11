@@ -113,7 +113,7 @@ end
 
 qub, mech, HBAR_qubit = Qubit_HO(N_cut_off, :FockBasis, 1//2)
 
-
+Δ_max=1e4
 basis_system = HBAR_qubit.Ia.basis_l
 
 #Matrices for time evolution
@@ -124,7 +124,7 @@ pI = HBAR_qubit.pI.data
 zI = HBAR_qubit.zI.data
 xI = HBAR_qubit.xI.data
 
-H_JC = g * (Iad * mI  + Ia * pI) 
+H_JC = (g/Δ_max) * (Iad * mI  + Ia * pI) 
 
 
 
@@ -141,7 +141,7 @@ function SE_Fock_dynamics(du::Vector{Float64}, u::Vector{Float64}, p, t)
 
 
     ψ = u[1:2:end] + im * u[2:2:end]
-    dψ = -1im * H_tot * 2 * π * ψ 
+    dψ = -1im * H_tot * ψ 
 
 
     for i in eachindex(dψ)
@@ -190,11 +190,11 @@ function QuantumEnv(N_cut_off::Int)
 
 
     t0 = 0.0
-    t_step =   0.3e-5
+    t_step =   3e-5* Δ_max
 
     #t_step =   0.3e-5
     
-    max_steps = 400 #500
+    max_steps = 500 #500
 
 
     t_span = (t0, t0 + t_step)
@@ -244,10 +244,10 @@ Flux.@layer Actor
 
 function Actor(state_dim::Int, action_dim::Int)
     chain = Chain(
-    Dense(state_dim, 64, tanh),
-    Dense(64, 64, tanh),
-    #Dense(64, 32, tanh),
-    Dense(64, action_dim * 2)
+    Dense(state_dim, 128, tanh),
+    Dense(128, 64, tanh),
+    Dense(64, 32, tanh),
+    Dense(32, action_dim * 2)
     )
     Actor(chain)
 end
@@ -288,10 +288,10 @@ Flux.@layer Critic
 
 function Critic(state_dim::Int)
     chain = Chain(
-        Dense(state_dim, 64, tanh),
-        Dense(64, 64, tanh),
-        #Dense(64, 32, tanh),
-        Dense(64, 1)
+        Dense(state_dim, 128, relu),
+        Dense(128, 64, relu),
+        Dense(64, 32, relu),
+        Dense(32, 1)
     )
     Critic(chain)
 end
@@ -313,17 +313,14 @@ function step!(env::QuantumEnv, a::Vector{Float64})
     old_fid = abs2(env.target_state' * env.current_state)
 
     # ---- mapping azioni → controlli fisici (kHz) ----
-    Δ_max = 5e3
-    Δ_min = g / sqrt(2)
-    Ω_max = Δ_max^2 /g
+    Δ_max = 1e4
+    Ω_max_ = 1e3 / Δ_max
     
+    a1 = (a[1]+1)/2
+    a2 = a[2]
 
-    a1 = clamp(a[1], -1.0, 1.0)
-    a2 = clamp(a[2], -1.0, 1.0)
-    
-    #Δ = Δ_min + (Δ_max - Δ_min) * (a1 + 1.0)/2.0
-    Δ = a1 * Δ_max
-    Ω = a2 *  Ω_max
+    Δ = a1 
+    Ω = a2 *  Ω_max_
     
     # ---- integrazione su tempo CONTINUO ----
     t0, t1 = env.t_span
@@ -342,31 +339,50 @@ function step!(env::QuantumEnv, a::Vector{Float64})
 
     # ---- reward & done ----
     new_fidelity = clamp(abs2(env.target_state' * env.current_state), 0.0, 1.0)
-    delta_fidelity = new_fidelity - old_fid
+    
 
     success_threshold = SUCCESS_THR[] 
    
+    p=3
+
+    delta_fidelity = new_fidelity - old_fid
+    delta_fidelity_p = new_fidelity^p -old_fid^p
+    success_threshold = SUCCESS_THR[] 
 
 
-    if env.current_step ≥ env.max_steps || new_fidelity ≥ success_threshold
-        reward = new_fidelity
-        env.done = true
+    w = exp(-30 * max(0.0,  success_threshold - new_fidelity))  # α≈20–30
+    r = (1 - w)*delta_fidelity + w*delta_fidelity_p
+    
 
-    else
+    reward = 10*r 
 
-        
-        reward = 6 *tanh(delta_fidelity)
-        #reward = new_fidelity
 
-        env.done = false
+    reward += 2.0 * max(0.0, new_fidelity - success_threshold[])
+
+
+    #reward = 6 *tanh(delta_fidelity)
+
+    
+    if delta_fidelity < 0
+
+        reward += 0.01*delta_fidelity
 
     end
-    
+
+    if env.current_step ≥ env.max_steps  
+
+         env.done = true
+
+    elseif new_fidelity ≥ success_threshold
+        reward += 10 * (new_fidelity-success_threshold)
+        #reward = new_fidelity
+        env.done=true  #questo non puoi levarlo senno traiettorie piu lughe vincono
+    else
+         env.done = false
+        
+    end
     return reward, env.done
 end
-
-
-
 function step_envs!(envs::Vector{QuantumEnv}, actions::Vector)
     N = length(envs)
     rewards = Vector{Float64}(undef, N)

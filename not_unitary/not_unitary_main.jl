@@ -10,8 +10,8 @@ using Flux
 
 N_cut_off = 6;
 N_mech    = 1;
-g         = 350*2*pi;
-#g=10
+
+
 global ωm = 5.9614e6;
 
 include("not_unitary_RL_PPO.jl")
@@ -20,20 +20,20 @@ include("not_unitary_RL_PPO.jl")
 # --- PPO Hyperparameters 
 BATCH_SIZE = 64;
 LAST_BUMP_EP = Ref(0)
-THR_LADDER = [0.65,0.70 ,0.75,0.76,0.78,0.80,0.83,0.85,0.86,0.87,0.88,0.89,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.950,0.955,0.96,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
+THR_LADDER = [0.40,0.45,0.47,0.50,0.53,0.57,0.60,0.65,0.70 ,0.75,0.76,0.78,0.80,0.83,0.85,0.86,0.87,0.88,0.89,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.945,0.950,0.955,0.96,0.965,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
 N_UPDATE_EPOCHS = 4;
-GAMMA = 0.99 ;
+GAMMA = 1;
 LAMBDA = 0.95;
-CLIP_RANGE = 0.2 #provare 0.3 forse??;
+CLIP_RANGE = 0.3 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
 CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
 LR_ACTOR = 0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
 LR_CRITIC = 0.5e-4 ;# Learning rate for the critic network
 
-N_ENV = 4;
+N_ENV = 8;
 N_ROLLOUT = 1024
 n_envs = N_ENV;
 # --- 
@@ -49,7 +49,7 @@ function reset_envs!(envs::Vector{QuantumEnv})
     end
     return states
 end
-
+ 
 env = QuantumEnv(N_cut_off) ;
 
 state_dim  = length(RLBase.state_space(env))   ;  # = 2*d^2
@@ -214,16 +214,16 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 5000;
+num_episodes = 1000;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
 
 
 
 
+length(best_actions)
 
-
-@save "not_unitary/plots & data//results1.jld2" all_rewards all_fidelities best_actions   
+@save "not_unitary_bis/plots & data/g3582pi/results_1.JLD2" all_rewards all_fidelities best_actions   
 
 
 
@@ -234,14 +234,7 @@ all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, ag
 
 qub, mech, ops = Qubit_HO(N_cut_off, :FockBasis, 1//2);
 
-"""
-Simula una sequenza di azioni usando la stessa fisica/parametrizzazione di `step!`.
 
-Ritorna:
-- ρ_solution :: Vector{Operator}    # traiettoria degli stati (incluso solo il primo stato iniziale una volta)
-- exp_values :: Vector{Float64}     # ⟨n_mech⟩ lungo la traiettoria (senza il punto duplicato)
-- exp_values_q :: Vector{Float64}   # ⟨n_qubit⟩ lungo la traiettoria (senza il punto duplicato)
-"""
 function simulate_with_actions_step!(best_actions::Vector,
                                      ψ_init::Ket,
                                      ops;
@@ -250,33 +243,33 @@ function simulate_with_actions_step!(best_actions::Vector,
                                      κϕ::Real,
                                      κ::Real,
                                      nthm::Real,
-                                     Δt::Float64 = 0.3e-5)
+                                     Δt::Float64)
 
     # stato iniziale e tempo
     ρ  = dm(ψ_init)
     t0 = 0.0
 
-    # output
-    ρ_solution   = Operator[]   # include lo stato iniziale una sola volta
-    exp_values   = Float64[]     # ⟨n_mech⟩
-    exp_values_q = Float64[]     # ⟨n_qubit⟩
-
     
     n_mech_op  = ops.Iad * ops.Ia        # a†a sul modo meccanico (⊗ I_qubit)
-    n_qubit_op = ops.pI  * ops.mI        # σ⁺σ⁻ = |1⟩⟨1| sul qubit (⊗ I_osc)
+    n_qubit_op = ops.pI  * ops.mI   
+
+    
+    ρ_solution   = Operator[ρ]   # include lo stato iniziale una sola volta
+    exp_values   =  [real(expect( n_mech_op, ρ))]     # ⟨n_mech⟩
+    exp_values_q = [real(expect(  n_qubit_op, ρ))]    # ⟨n_qubit⟩
+     # σ⁺σ⁻ = |1⟩⟨1| sul qubit (⊗ I_osc)
 
     for a in best_actions
         # --- controlli come in step! ---
         a1 = Float64((a[1]+1)/2)
         a2 = Float64(a[2])
 
-        Δ_max = 1e4
-        Ω_max_ = 1e3 / Δ_max
+
         Δ = a1
-        Ω = Ω_max_ * a2
+        Ω = a2
 
         # Hamiltoniana: JC + drive X/Z con le stesse scalature
-        H_JC = g/Δ_max * (ops.Iad * ops.mI + ops.Ia * ops.pI)
+        H_JC = g * (ops.Iad * ops.mI + ops.Ia * ops.pI)
 
         Ω_(t) = Ω 
         Δ_(t) = Δ 
@@ -321,7 +314,7 @@ end
 
 
 
-Δ_max =  1e4
+
 κϕ =  0.25 / Δ_max
 κ  =  19 / Δ_max
 γm =  0.025 / Δ_max
@@ -344,7 +337,7 @@ nthm  = 1 / (exp((ωm*1e3*hbar_) / (Teq*kb)) - 1)
                                      κϕ,
                                      κ,
                                      nthm,
-                                     Δt=3e-5*Δ_max);
+                                     Δt=5e-2);
 
 
 ψ_target = tensor(spindown(qub.basis), fockstate(mech.basis, N_mech));
@@ -362,35 +355,31 @@ println("Fidelity finale = ", final_fid)
 
 p = plot(n_mech_traj; label="⟨n_mech⟩", xlabel="step",
           legend=:outertopright, size=(1200,800),
-         legendtitle="Fidelity finale = $(round(final_fid; digits=5))", grid=true,ylims=(0,1.1),
-         marker=:circle,       # ← aggiunge i punti
-        markersize=2,         # ← dimensione punti
-        line=:solid,          # ← linea continua
+         legendtitle="Best Fidelity = $(round(final_fid; digits=5))", grid=true,ylims=(0,2.1),
+         marker=:circle,       
+        markersize=2,         
+        line=:solid,          
         linewidth=2,
-        framestyle=:box) ;
+        framestyle=:box);
 plot!(p, n_qubit_traj; label="⟨n_qubit⟩",
-         marker=:circle,       # ← aggiunge i punti
-        markersize=2,         # ← dimensione punti
-        line=:solid,          # ← linea continua
+         marker=:circle,       
+        markersize=2,         
+        line=:solid,         
         linewidth=2,
         framestyle=:box)
-savefig(p, "not_unitary/plots & data/plot_1.pdf")
+savefig(p, "not_unitary_bis/plots & data/g3582pi/plot_1.pdf")
 
 # ultimi valori
 last_n_mech  = n_mech_traj[end]
 last_n_qubit = n_qubit_traj[end]
 
-
-# limiti (in kHz)
-Δ_max =  1e4
-Ω_max =  1e3
-
+length(best_actions)
 
 
 
 
 function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
-    isempty(best_actions) && (@warn "best_actions è vuoto"; return nothing)
+   
     a_mat = hcat([Float64.(vec(a)) for a in best_actions]...)
     T = size(a_mat, 2)
     steps = 1:T
@@ -398,12 +387,12 @@ function plot_best_controls(best_actions::Vector; ωm, Δ_max, Ω_max)
     a1 = float(a_mat[1, :])   
     a1 = (a1 .+1 )./2             # in [0,1]
     a2 = float(a_mat[2, :])
-    Δ = Δ_max             # kHz
-    Ω_ = Ω_max  / Δ_max               # kHz
+               
+                 
 
     p = plot(layout=(2,1), link=:x, size=(1200,800),framestyle=:box)
     plot!(p[1], steps, a1, xlabel="step", ylabel="Δ / Δ_max", legend=false, grid=true,framestyle=:box)
-    plot!(p[2], steps, a2 * Ω_,  xlabel="step", ylabel="Ω / Δ_max", legend=false, grid=true,framestyle=:box)
+    plot!(p[2], steps, a2 ,  xlabel="step", ylabel="Ω / Δ_max", legend=false, grid=true,framestyle=:box)
     p[1][:framestyle] = :box
     p[2][:framestyle] = :box
     display(p)
@@ -416,7 +405,7 @@ end
 
 plot_best_actions = plot_best_controls(best_actions; ωm=ωm, Δ_max=Δ_max, Ω_max=Ω_max)
 
-savefig(plot_best_actions,"not_unitary/plots & data/best_actions_1.pdf")
+savefig(plot_best_actions,"not_unitary_bis/plots & data/g3582pi/best_actions_1.pdf")
 
 a = 1-final_fid
 
