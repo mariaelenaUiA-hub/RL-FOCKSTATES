@@ -280,15 +280,15 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     env.current_step += 1
     ops  = env.operators
     
-    
+    # fidelity prima dello step
     old_fid =  real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
     a1 = clamp(a[1], -1, 1)
     a2 = clamp(a[2], -1, 1)
 
 
-    a1 = (a1 .+1)*0.525 .- 0.05
-    #a1= (a1+1)/2 
+    #a1 = (a1 .+1)*0.55 .- 0.1
+    a1= (a1+1)/2 
     a2 = a2
     
     Ω_max = 1
@@ -344,8 +344,8 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     reward = 10*r + max(0.0, new_fidelity - success_threshold)
 
     if env.current_step > 1
-        reward -= 0.001* (Δ_Δ + Δ_Ω)
-        
+        #reward -= 0.001* (Δ_Δ + Δ_Ω)
+        reward -=0.01*(Δ_Δ + Δ_Ω)
     end
 
     env.prev_Δ = Δ

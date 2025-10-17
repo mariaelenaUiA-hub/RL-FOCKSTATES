@@ -1,7 +1,7 @@
 using Plots
 
-success_threshold = 0.9   # soglia attuale
-α = 30                    # coefficiente di "ripidezza"
+success_threshold = 0.95  # soglia attuale
+α = 1/success_threshold                 # coefficiente di "ripidezza"
 
 new_fidelity = range(0, 1, length=500)
 w = @. exp(-α * max(0.0, success_threshold - new_fidelity))
