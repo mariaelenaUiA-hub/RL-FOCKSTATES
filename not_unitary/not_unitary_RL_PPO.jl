@@ -14,7 +14,6 @@ using LinearAlgebra
 
 Δ_max =  1e5
 g  = 358*2*pi
-#g= 2e4
 
 g  =  g/Δ_max
 κϕ =  0.25 / Δ_max
@@ -229,9 +228,9 @@ function (actor::Actor)(state)
         μ     = x[1:action_dim, :]
         log_σ = x[action_dim + 1 : end, :]
     end
-    log_σ = clamp.(log_σ, -20.0, 2.0)
-    σ     = log1p.(exp.(log_σ)) .+ 1e-6    # softplus + eps
-    σ     = clamp.(σ, 1e-6, 5.0) 
+    log_σ = clamp.(log_σ, -10.0, 1.0)
+    σ = exp.(log_σ) .+ 1e-5        
+    σ = clamp.(σ, 1e-4, 3.0)
     return Normal.(μ, σ)
 end
 
@@ -280,15 +279,15 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     env.current_step += 1
     ops  = env.operators
     
-    
+    # fidelity prima dello step
     old_fid =  real(QuantumOpticsBase.fidelity(env.current_state, env.target_state))
 
     a1 = clamp(a[1], -1, 1)
     a2 = clamp(a[2], -1, 1)
 
 
-    a1 = (a1 .+1)*0.525 .- 0.05
-    #a1= (a1+1)/2 
+    #a1 = (a1 .+1)*0.55 .- 0.1
+    a1= (a1+1)/2
     a2 = a2
     
     Ω_max = 1
@@ -336,16 +335,16 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     delta_fidelity_p = new_fidelity^p -old_fid^p
     success_threshold = SUCCESS_THR[] 
     
-    α = 1/ success_threshold
-    w =exp(-α * max(0,success_threshold - new_fidelity))
+    α = 3/ success_threshold
+    #w =exp(-α * max(0,success_threshold - new_fidelity))
+    w= 1/ (1+exp(-α*(new_fidelity - success_threshold)))
     r= (1-w)* delta_fidelity + w * delta_fidelity_p
     
     
     reward = 10*r + max(0.0, new_fidelity - success_threshold)
 
     if env.current_step > 1
-        reward -= 0.001* (Δ_Δ + Δ_Ω)
-        
+        reward -= 0.001* (Δ_Δ + Δ_Ω) 
     end
 
     env.prev_Δ = Δ
@@ -356,7 +355,7 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
 
         env.done=true
 
-    elseif new_fidelity ≥ success_threshold + 0.003
+    elseif new_fidelity ≥ success_threshold + 0.04
         reward += new_fidelity 
         env.done=true
     

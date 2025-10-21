@@ -8,7 +8,7 @@ using Statistics
 using StableRNGs
 using Flux
 
-N_cut_off = 4;
+N_cut_off = 6;
 N_mech    = 1;
 
 
@@ -19,10 +19,10 @@ include("not_unitary_RL_PPO.jl")
 
 # --- PPO Hyperparameters 
 BATCH_SIZE = 64;
-LAST_BUMP_EP = Ref(0)
-BEST_MED10   = Ref(0.0)   
-LAST_DOWN_EP = Ref(0)     
-THR_LADDER = [0.30,0.40,0.50,0.55,0.60,0.65,0.70 ,0.75,0.76,0.78,0.80,0.83,0.85,0.86,0.87,0.88,0.89,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.945,0.950,0.955,0.96,0.965,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
+LAST_BUMP_EP = Ref(0);
+BEST_MED10   = Ref(0.0) ;  
+LAST_DOWN_EP = Ref(0)   ;  
+THR_LADDER = [0.55,0.56,0.57,0.58,0.59,0.60,0.61,0.62,0.63,0.65,0.70,0.73,0.75,0.76,0.78,0.80,0.83,0.85,0.86,0.87,0.88,0.89,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.945,0.950,0.955,0.96,0.965,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
 N_UPDATE_EPOCHS = 4;
@@ -32,8 +32,8 @@ CLIP_RANGE = 0.2 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
 CRITIC_LOSS_WEIGHT = 0.5 #era 0.5;
 MAX_GRAD_NORM = 0.5 ;
-LR_ACTOR = 0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
-LR_CRITIC = 0.5e-4 ;# Learning rate for the critic network
+LR_ACTOR = 0.5e-4 #0.5e-4; # Learning rate for the actor network #MI RACCOMANDO MARI, I DUE LR MAI DIVERSI TANTO!!
+LR_CRITIC = 0.5e-4 #0.5e-4 ;# Learning rate for the critic network
 
 N_ENV = 8;
 N_ROLLOUT = 1024
@@ -87,8 +87,11 @@ reset_opt_states!(agent);
 
 envs = create_envs(N_ENV, N_cut_off);
 
+using BSON: @save
 
-function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, num_episodes::Int)
+
+function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, num_episodes::Int;
+                                     save_path::String="best_agent.bson")
     n_env = length(envs)
 
     episode_rewards    = Float64[]
@@ -113,7 +116,7 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
             for i in 1:n_env
                 if !done_flags[i]
                     a, lp, v = select_action(agent, states[i])
-                    actions[i]      = Vector{Float64}(a)   # forza il tipo corretto
+                    actions[i]      = Vector{Float64}(a)
                     log_probs[i]    = lp
                     values_state[i] = v
                 else
@@ -123,12 +126,10 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
                 end
             end
 
-            # steppa solo gli attivi
             active_idx = findall(i -> !done_flags[i], 1:n_env)
             if !isempty(active_idx)
                 envs_active    = envs[active_idx]
                 actions_active = [actions[i] for i in active_idx]
-
                 ns_act, r_act, d_act = step_envs!(envs_active, actions_active)
 
                 new_states = copy(states)
@@ -164,17 +165,12 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
             end
         end
 
-        # flush finale
         if !isempty(agent.buffer.rewards)
             update!(agent; bootstrap_values_by_env=zeros(n_env))
         end
 
-        # --- metriche episodio ---
-        # Caso 1: target salvato come density matrix (consigliato)
-        fidelities = [clamp(real(QuantumOpticsBase.fidelity(env.current_state, env.target_state)), 0.0, 1.0) for env in envs]
-
-        # Caso 2 (alternativo): se hai `env.target_ket`
-        # fidelities = [clamp(real(expect(env.current_state, env.target_ket)), 0.0, 1.0) for env in envs]
+        fidelities = [clamp(real(QuantumOpticsBase.fidelity(env.current_state, env.target_state)), 0.0, 1.0)
+                      for env in envs]
 
         avg_fidelity  = mean(fidelities)
         max_fidelity, idx = findmax(fidelities)
@@ -183,42 +179,32 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
         if max_fidelity > best_fidelity
             best_fidelity = max_fidelity
             best_actions  = copy(best_actions_episode)
+            @save save_path agent best_fidelity episode
+            println("✨ New best fidelity = $(round(best_fidelity; digits=5)) saved to $(save_path)")
         end
 
         sr = count(>=(SUCCESS_THR[]), fidelities) / n_env
         push!(sr_hist, sr)
-        push!(episode_rewards,    mean(rewards_this_ep))
+        push!(episode_rewards, mean(rewards_this_ep))
         push!(episode_fidelities, avg_fidelity)
 
         maybe_bump_threshold!(episode_fidelities, sr_hist, agent; episode=episode)
 
-        if episode % 20 == 0 && length(episode_rewards) >= 20
-            recent_rewards    = episode_rewards[end-9:end]
-            recent_fidelities = episode_fidelities[end-9:end]
-            corr_val = Statistics.cor(recent_rewards, recent_fidelities)
-
-            println("Ep $episode | AvgR=$(round(mean(recent_rewards);    digits=4)) | " *
-                    "AvgF=$(round(mean(recent_fidelities); digits=4)) | " *
-                    "Corr=$(round(corr_val;               digits=4)) | " *
-                    "SR=$(round(sr;                       digits=2)) | Thr=$(SUCCESS_THR[]) | " *
-                    "EntW=$(round(agent.entropy_loss_weight; digits=4))")
-        else
-            println("Ep $episode | AvgR=$(round(mean(rewards_this_ep); digits=4)) | " *
-                    "AvgF=$(round(avg_fidelity;        digits=4)) | " *
-                    "BestF(ep): $(round(max_fidelity;  digits=4)) | " *
-                    "SR=$(round(sr;                    digits=2)) | Thr=$(SUCCESS_THR[]) | " *
-                    "EntW=$(round(agent.entropy_loss_weight; digits=4))")
+        if episode % 20 == 0
+            println("Ep $episode | AvgF=$(round(avg_fidelity; digits=4)) | BestF=$(round(best_fidelity; digits=4)) | SR=$(round(sr; digits=2))")
         end
     end
 
-    println("Training finished! Best Fidelity = $best_fidelity")
-    return episode_rewards, episode_fidelities, best_actions
+    println("\n✅ Training finished! Best Fidelity = $(round(best_fidelity; digits=5))")
+    println("Best policy saved to $(save_path)")
+
+    return (episode_rewards, episode_fidelities, best_actions, best_fidelity)
 end
 
 
-num_episodes = 500;
+num_episodes = 350;
 envs = create_envs(N_ENV, N_cut_off);
-all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes)
+all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes; save_path="not_unitary/plots&data/g2e3/best_agent_1_g2e3.bson")
 
 
 
@@ -229,14 +215,14 @@ all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, ag
 
 
 
-@save "not_unitary/plots&data/g8e4/results_1.JLD2" all_rewards all_fidelities best_actions   
+@save "not_unitary/plots&data/g2e3/results_1.JLD2" all_rewards all_fidelities best_actions   
 
 
 
 
 Δ_max =  1e5
-#g  = 358*2*pi
-g=8e4
+g  = 358*2*pi
+#g=1e5
 g  =  g/Δ_max
 κϕ =  0.25 / Δ_max
 κ  =  19 / Δ_max
@@ -440,7 +426,7 @@ p = plot_populations(n_mech_traj, n_qubit_traj;
      markers_every = 30)
 
 
-savefig(p, "not_unitary/plots&data/g8e4/plot_1.pdf")
+savefig(p, "not_unitary/plots&data/g2e3/plot_1.pdf")
 
 
 
@@ -520,7 +506,7 @@ plot_best_actions=plot_best_controls(best_actions; markers_every=12, movavg_wind
 
 
 
-savefig(plot_best_actions,"not_unitary/plots&data/g8e4/best_actions_1.pdf")
+savefig(plot_best_actions,"not_unitary/plots&data/g1e5/best_actions_1.pdf")
 
 a = 1-final_fid
 
@@ -531,4 +517,4 @@ plot_f = plot(all_fidelities;
     label="Fidelity",
     title="Fidelity")
 
-savefig(plot_best_actions,"not_unitary/plots&data/g8e4/fidelity_1.pdf")
+savefig(plot_f,"not_unitary/plots&data/g1e5/fidelity_1.pdf")
