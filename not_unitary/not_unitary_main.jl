@@ -22,11 +22,11 @@ BATCH_SIZE = 64;
 LAST_BUMP_EP = Ref(0);
 BEST_MED10   = Ref(0.0) ;  
 LAST_DOWN_EP = Ref(0)   ;  
-THR_LADDER = [0.55,0.56,0.57,0.58,0.59,0.60,0.61,0.62,0.63,0.65,0.70,0.73,0.75,0.76,0.78,0.80,0.83,0.85,0.86,0.87,0.88,0.89,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.945,0.950,0.955,0.96,0.965,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
+THR_LADDER = [0.50,0.60,0.70,0.80,0.83,0.87,0.90,0.905,0.91,0.915,0.920,0.925,0.930,0.940,0.945,0.950,0.955,0.96,0.965,0.97,0.975,0.980,0.985,0.990,0.991,0.992,0.995,0.996,0.997,0.998,0.999,0.9992,0.9993,0.9994,0.9995,0.9996,0.9997,0.9998,0.9999];
 THR_IDX      = Ref(1) ;
 SUCCESS_THR  = Ref(THR_LADDER[THR_IDX[]]);
 N_UPDATE_EPOCHS = 4;
-GAMMA = 0.995;
+GAMMA = 0.99;
 LAMBDA = 0.95;
 CLIP_RANGE = 0.2 #provare 0.3 forse??;
 ENTROPY_LOSS_WEIGHT = 0.02 ;
@@ -202,24 +202,105 @@ function main_training_loop_parallel(envs::Vector{QuantumEnv}, agent::PPOAgent, 
 end
 
 
-num_episodes = 350;
+num_episodes = 300;
 envs = create_envs(N_ENV, N_cut_off);
 all_rewards, all_fidelities, best_actions = main_training_loop_parallel(envs, agent, num_episodes; save_path="not_unitary/plots&data/g2e3/best_agent_1_g2e3.bson")
-
-
-
-#popopo
-
-
-
-
-
 
 @save "not_unitary/plots&data/g2e3/results_1.JLD2" all_rewards all_fidelities best_actions   
 
 
+#######################################################################################
+
+using BSON: @load
+using Statistics
 
 
+function evaluate_best_policy(agent_path::String; num_runs::Int=100)
+    @load agent_path agent best_fidelity
+    println("Loaded best agent (best fidelity = $(round(best_fidelity; digits=5)))")
+
+    eval_fidelities = Float64[]
+    all_actions = Vector{Vector{Vector{Float64}}}()
+
+    for run in 1:num_runs
+        env = QuantumEnv(N_cut_off)              # stesso cutoff del training
+        state = RLBase.reset!(env)
+        done = false
+        actions_run = Vector{Vector{Float64}}()
+
+        while !done
+            # inferenza deterministica
+            action, _, _ = select_action(agent, state;)
+            push!(actions_run, action)
+            next_state, _, done = step_env!(env, action)
+            state = next_state
+        end
+
+        fidelity = clamp(real(QuantumOpticsBase.fidelity(env.current_state, env.target_state)), 0.0, 1.0)
+        push!(eval_fidelities, fidelity)
+        push!(all_actions, actions_run)
+    end
+
+    # --- statistiche fidelities ---
+    meanF = mean(eval_fidelities)
+    stdF  = std(eval_fidelities)
+    sr_eval = count(>=(SUCCESS_THR[]), eval_fidelities) / num_runs
+
+    println("\n📊 Evaluation Results:")
+    println(" → Mean Fidelity: $meanF")
+    println(" → Std Fidelity:  $stdF")
+    println(" → Success Rate:  $(round(sr_eval*100; digits=2))% (Thr=$(SUCCESS_THR[]))")
+
+    # --- controlli medi ---
+    T = minimum(length.(all_actions))
+    A = length(first(first(all_actions)))
+    avg_actions = [zeros(Float64, A) for _ in 1:T]
+    std_actions = [zeros(Float64, A) for _ in 1:T]
+
+    for t in 1:T
+        step_actions = [all_actions[r][t] for r in 1:num_runs if length(all_actions[r]) >= t]
+        M = reduce(hcat, step_actions)
+        avg_actions[t] = mean(M; dims=2)[:]
+        std_actions[t] = std(M; dims=2)[:]
+    end
+
+    println("\n📈 Mean control sequence (averaged over $num_runs runs):")
+    for (t, a) in enumerate(avg_actions)
+        println(" step $t → ", round.(a; digits=4), " ± ", round.(std_actions[t]; digits=4))
+    end
+
+    return (eval_fidelities, avg_actions, std_actions)
+end
+
+function step_env!(env::QuantumEnv, action::Vector{Float64})
+    ns, r, d = step_envs!([env], [action])
+    return ns[1], r[1], d[1]
+end
+
+
+eval_fids, avg_ctrls, std_ctrls = evaluate_best_policy(
+    "not_unitary/plots&data/g2e3/best_agent_1_g2e3.bson";
+    num_runs = 500
+)
+
+
+using Plots
+
+T = length(avg_ctrls)
+times = 1:T
+
+ctrl1_mean = [a[1] for a in avg_ctrls]
+ctrl2_mean = [a[2] for a in avg_ctrls]
+ctrl1_std  = [s[1] for s in std_ctrls]
+ctrl2_std  = [s[2] for s in std_ctrls]
+
+plot(times, ctrl1_mean, ribbon=ctrl1_std,
+     label=" Δ/ Δ_max (mean ± σ)", color=:blue, xlabel="Time step", ylabel="Action value")
+plot(times, ctrl2_mean, ribbon=ctrl2_std,
+     label="Ω/ Δ_max (mean ± σ)", color=:red)
+
+
+################################
 Δ_max =  1e5
 g  = 358*2*pi
 #g=1e5
@@ -481,11 +562,11 @@ function plot_best_controls(best_actions::Vector;
     xlabel!(p[2], "step"); ylabel!(p[2], "Ω / Δ_max")
 
     # (opzionale) media mobile, ma non in legenda
-    if movavg_window > 1
-        movmean(v, w) = [mean(@view v[max(1,i-w+1):i]) for i in eachindex(v)]
-        plot!(p[1], steps, movmean(a1, movavg_window); lw=2, color=:black, linealpha=0.5, label=false)
-        plot!(p[2], steps, movmean(a2, movavg_window); lw=2, color=:black, linealpha=0.5, label=false)
-    end
+    #if movavg_window > 1
+        #movmean(v, w) = [mean(@view v[max(1,i-w+1):i]) for i in eachindex(v)]
+        #plot!(p[1], steps, movmean(a1, movavg_window); lw=2, color=:black, linealpha=0.5, label=false)
+        #plot!(p[2], steps, movmean(a2, movavg_window); lw=2, color=:black, linealpha=0.5, label=false)
+    #end
 
     # Solo la media in legenda
     #if mean_in_caption
@@ -506,7 +587,7 @@ plot_best_actions=plot_best_controls(best_actions; markers_every=12, movavg_wind
 
 
 
-savefig(plot_best_actions,"not_unitary/plots&data/g1e5/best_actions_1.pdf")
+savefig(plot_best_actions,"not_unitary/plots&data/g2e3/best_actions_1.pdf")
 
 a = 1-final_fid
 

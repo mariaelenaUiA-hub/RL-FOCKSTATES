@@ -228,9 +228,9 @@ function (actor::Actor)(state)
         μ     = x[1:action_dim, :]
         log_σ = x[action_dim + 1 : end, :]
     end
-    log_σ = clamp.(log_σ, -10.0, 1.0)
-    σ = exp.(log_σ) .+ 1e-5        
-    σ = clamp.(σ, 1e-4, 3.0)
+    log_σ = clamp.(log_σ, -20.0, 2.0)
+    σ     = log1p.(exp.(log_σ)) .+ 1e-6    # softplus + eps
+    σ     = clamp.(σ, 1e-6, 5.0) 
     return Normal.(μ, σ)
 end
 
@@ -341,10 +341,10 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
     r= (1-w)* delta_fidelity + w * delta_fidelity_p
     
     
-    reward = 10*r + max(0.0, new_fidelity - success_threshold)
+    reward = 10*r #+ max(0.0, new_fidelity - success_threshold)
 
     if env.current_step > 1
-        reward -= 0.001* (Δ_Δ + Δ_Ω) 
+        reward -= 0.001* (Δ_Δ + Δ_Ω)
     end
 
     env.prev_Δ = Δ
@@ -355,7 +355,7 @@ function step!(env::QuantumEnv, a::AbstractVector{<:Real})
 
         env.done=true
 
-    elseif new_fidelity ≥ success_threshold + 0.04
+    elseif new_fidelity ≥ success_threshold + 0.03
         reward += new_fidelity 
         env.done=true
     
